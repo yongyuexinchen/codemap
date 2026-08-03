@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>CodeMap</title>
+<style>
+  /* Light-only theme (codeflow block-diagram style): white background,
+     yellow module boxes, purple/red/black cubes, black lines, gray labels. */
+  :root {
+    --bg: #ffffff; --panel: #f7f8fa; --fg: #1a1a1a;
+    --muted: #8a8f98; --accent: #4f8cff; --line: #e3e6ea;
+    --frame: #d9dce1;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--fg);
+    font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+
+  /* Visible resize frame: 12px border ring + 8 drag handles (see .rh). */
+  #resize-frame { position: absolute; inset: 0; display: flex;
+    flex-direction: column; border: 12px solid var(--frame); }
+
+  header { display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px; background: var(--panel);
+    border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 14px; font-weight: 600;
+    letter-spacing: .5px; }
+  #back { background: var(--accent); color: #fff; border: none; }
+  #back:hover { background: #3e7de8; }
+  .view-switch { display: inline-flex; gap: 2px; }
+  .view-switch button { padding: 4px 10px; }
+  .view-switch button.active { background: var(--accent); color: #fff;
+    border-color: var(--accent); }
+  /* Searchable module picker: typing fuzzy-filters the list, click/Enter
+     jumps to that module's micro view (replaces the unreliable native
+     <select> in the frameless WebView2 window). */
+  .module-picker { position: relative; }
+  #module-search { padding: 3px 8px; border: 1px solid #d8dce2;
+    border-radius: 4px; background: #fff; color: var(--fg); font-size: 12px;
+    width: 168px; outline: none; }
+  #module-search:focus { border-color: var(--accent); }
+  .module-list { position: absolute; top: calc(100% + 4px); left: 0;
+    width: 240px; max-height: 232px; overflow-y: auto; background: #fff;
+    border: 1px solid #d8dce2; border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .14); z-index: 60; padding: 4px 0; }
+  .module-list .item { display: flex; align-items: baseline; gap: 6px;
+    padding: 6px 10px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+  .module-list .item:hover { background: #f0f4ff; }
+  .module-list .item.active { background: #e3edff; }
+  .module-list .item b { color: var(--accent); font-weight: 600; }
+  .module-list .item .hint { margin-left: auto; color: var(--muted);
+    font-size: 11px; }
+  .module-list .empty { padding: 8px 10px; color: var(--muted); font-size: 12px; }
+  #pop-micro { white-space: nowrap; }
+  .stats { margin-left: auto; color: var(--muted); white-space: nowrap; }
+  .stats b { color: var(--accent); font-weight: 600; }
+  button { background: #eef0f3; color: var(--fg);
+    border: 1px solid #d8dce2; border-radius: 4px;
+    padding: 4px 12px; cursor: pointer; }
+  button:hover { background: #e2e6eb; }
+  #close { margin-left: 8px; padding: 2px 10px; font-size: 14px;
+    line-height: 1.4; background: transparent; border-color: transparent;
+    color: var(--muted); }
+  #close:hover { color: #c0392b; background: rgba(192, 57, 43, .08); }
+
+  #graph { display: flex; width: 100%; flex: 1; min-height: 0;
+    overflow: auto; background: var(--bg); cursor: grab; }
+  #graph.panning { cursor: grabbing; }
+  /* flex + margin:auto centers the diagram when smaller than the window and
+     lets the container scroll from the top-left once it is zoomed past it. */
+  #graph .mermaid { flex: none; margin: auto; }
+  #graph .mermaid svg { display: block; }
+  #graph .edgeLabel { background: #ffffff; color: var(--muted); font-size: 11px; }
+  /* mermaid v10 renders `-.->` ref edges as edge-pattern-dotted with a 2px
+     dot dasharray; override to a clean dashed line (still orthogonal). */
+  #graph .edge-pattern-dotted { stroke-dasharray: 6 4 !important; }
+  /* Incremental-change highlights (refresh button / 2s auto-poll):
+     added = green outline, modified = yellow fill + CSS blink,
+     removed = red dashed ghost. The `style` directive's inline styles win
+     over mermaid's classDef CSS, so !important rules enforce the colors. */
+  @keyframes codemap-blink { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  #graph g.node.modifiedClass { animation: codemap-blink .9s ease-in-out infinite; }
+  #graph g.node.modifiedClass rect {
+    fill: #fff8dc !important; stroke: #f1c40f !important;
+    stroke-width: 3px !important;
+  }
+  #graph g.node.modifiedClass * { color: #1a1a1a !important; }
+  #graph g.node.addedClass rect {
+    stroke: #2ecc71 !important; stroke-width: 2.5px !important;
+  }
+  #graph g.node.removedClass rect {
+    stroke: #e74c3c !important; stroke-width: 2px !important;
+    stroke-dasharray: 5 3 !important;
+  }
+
+  .zoom-group { display: inline-flex; align-items: center; gap: 4px; }
+  .zoom-group button { padding: 2px 8px; min-width: 28px; }
+  #zoom-reset { min-width: 48px; font-size: 12px; }
+  #graph .cluster-label { fill: #1a1a1a; color: #1a1a1a; font-weight: 600; }
+  #graph g.cluster { cursor: pointer; }
+  #graph g.cluster:hover rect { filter: brightness(.97); }
+
+  #status { position: absolute; right: 16px; bottom: 12px;
+    max-width: calc(100% - 300px); color: var(--muted); font-size: 12px;
+    text-align: right; }
+  /* Legend: a compact floating box that wraps instead of one overflowing
+     nowrap line, so it never collides with the status text on the right. */
+  #legend { position: absolute; left: 16px; bottom: 12px;
+    max-width: calc(100% - 240px);
+    display: flex; flex-direction: column; align-items: flex-start;
+    gap: 3px;
+    color: var(--muted); font-size: 11px;
+    background: rgba(255, 255, 255, .92);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 4px 8px; box-shadow: 0 2px 8px rgba(0, 0, 0, .06); }
+  #legend .lg-row { display: inline-flex; align-items: center;
+    flex-wrap: wrap; column-gap: 8px; row-gap: 2px; }
+  #legend .lg-item { display: inline-flex; align-items: center;
+    white-space: nowrap; }
+  #legend .sw { display: inline-block; width: 10px; height: 10px;
+    margin-right: 2px; vertical-align: -1px; border: 1px solid #000; }
+  #legend .lg-hint { padding-top: 3px; margin-top: 1px;
+    border-top: 1px dashed var(--line); }
+
+  /* Border resize handles (transparent, each with its own cursor). */
+  .rh { position: absolute; z-index: 5; }
+  .rh[data-edges="n"] { top: 0; left: 12px; right: 12px; height: 12px; cursor: ns-resize; }
+  .rh[data-edges="s"] { bottom: 0; left: 12px; right: 12px; height: 12px; cursor: ns-resize; }
+  .rh[data-edges="e"] { top: 12px; bottom: 12px; right: 0; width: 12px; cursor: ew-resize; }
+  .rh[data-edges="w"] { top: 12px; bottom: 12px; left: 0; width: 12px; cursor: ew-resize; }
+  .rh[data-edges="nw"] { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+  .rh[data-edges="ne"] { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+  .rh[data-edges="sw"] { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+  .rh[data-edges="se"] { bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+</style>
+</head>
+<body>
+  <div id="resize-frame">
+    <header>
+      <h1>CodeMap</h1>
+      <div class="view-switch">
+        <button id="view-macro" class="active" title="宏观业务模块图">宏观</button>
+        <button id="view-micro" title="当前模块类图">微观</button>
+      </div>
+      <div class="module-picker" title="搜索/选择业务模块（支持中文、英文、拼音模糊搜索）">
+        <input id="module-search" type="text" placeholder="🔍 搜索/选择板块…"
+               autocomplete="off" spellcheck="false">
+        <div id="module-list" class="module-list" hidden></div>
+      </div>
+      <button id="pop-micro" title="把微观图弹出为独立窗口">⧉ 弹出</button>
+      <button id="refresh">刷新</button>
+      <span class="zoom-group">
+        <button id="zoom-out" title="缩小 (滚轮向下)">−</button>
+        <button id="zoom-reset" title="重置缩放 (Ctrl+0)">100%</button>
+        <button id="zoom-in" title="放大 (滚轮向上)">＋</button>
+      </span>
+      <div class="stats"><span id="view-count">–</span></div>
+      <button id="close" title="退出 (Esc)">✕</button>
+    </header>
+    <div id="graph"></div>
+    <div id="status">加载中…</div>
+    <div id="legend" title="模块=黄框 · 类=紫框 · 基类=红框 · 文件=黑框；变更高亮：新增=绿色描边 · 修改=黄色闪烁 · 删除=红色虚线；实线=继承 · 虚线=引用/CALLS(次数)；点模块方块/搜索框选板块进微观 · 「⧉ 弹出」拆独立窗口 · 「刷新」增量更新+高亮">
+      <span class="lg-row">
+        <span class="lg-item"><span class="sw" style="background:#FFF3C4;border-color:#C9A227"></span>模块</span>
+        <span class="lg-item"><span class="sw" style="background:#8E5FD7"></span>类</span>
+        <span class="lg-item"><span class="sw" style="background:#D64545"></span>基类</span>
+        <span class="lg-item"><span class="sw" style="background:#23272E"></span>文件</span>
+        <span class="lg-item"><span class="sw" style="background:#fff;border-color:#2ecc71"></span>新增</span>
+        <span class="lg-item"><span class="sw" style="background:#fff8dc;border-color:#f1c40f"></span>修改</span>
+        <span class="lg-item"><span class="sw" style="background:#fff;border-color:#e74c3c"></span>删除</span>
+      </span>
+      <span class="lg-hint">实线=继承 · 虚线=引用/CALLS(次数) · 悬停查看完整说明</span>
+    </div>
+    <div class="rh" data-edges="n"></div>
+    <div class="rh" data-edges="s"></div>
+    <div class="rh" data-edges="e"></div>
+    <div class="rh" data-edges="w"></div>
+    <div class="rh" data-edges="nw"></div>
+    <div class="rh" data-edges="ne"></div>
+    <div class="rh" data-edges="sw"></div>
+    <div class="rh" data-edges="se"></div>
+  </div>
+  <script src="mermaid.min.js"></script>
+  <script src="render.js"></script>
+</body>
+</html>

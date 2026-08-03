@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # the local copy is unavailable. Both references carry the same integrity hash.
 D3_LOCAL_FILENAME = "d3.v7.min.js"
 D3_CDN_URL = "https://d3js.org/d3.v7.min.js"
-D3_SRI_HASH = "sha384-CjloA8y00+1SDAUkjs099PVfnY2KmDC2BZnws9kh8D/lX1s46w6EPhpXdqMfjK6i"
+D3_SRI_HASH = "sha384-1o0IZ8O5eFr94gUAGKeHQVLQDtON2SuWRyAcvEfCJKOTpqHzDAoBw9KOL7bM7zqv"
 
 
 def _d3_script_tags() -> str:

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>CodeMap · 微观</title>
+<style>
+  /* Same light-only theme as the main window: white background, purple/red/
+     black cubes, black orthogonal lines, gray labels. */
+  :root {
+    --bg: #ffffff; --panel: #f7f8fa; --fg: #1a1a1a;
+    --muted: #8a8f98; --accent: #4f8cff; --line: #e3e6ea;
+    --frame: #d9dce1;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--fg);
+    font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+
+  /* Visible resize frame: 12px border ring + 8 drag handles (see .rh). */
+  #resize-frame { position: absolute; inset: 0; display: flex;
+    flex-direction: column; border: 12px solid var(--frame); }
+
+  header { display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px; background: var(--panel);
+    border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 14px; font-weight: 600;
+    letter-spacing: .5px; }
+  #micro-title { color: var(--accent); font-weight: 600; }
+  .stats { margin-left: auto; color: var(--muted); }
+  .stats b { color: var(--accent); font-weight: 600; }
+  button { background: #eef0f3; color: var(--fg);
+    border: 1px solid #d8dce2; border-radius: 4px;
+    padding: 4px 12px; cursor: pointer; }
+  button:hover { background: #e2e6eb; }
+  #close { margin-left: 8px; padding: 2px 10px; font-size: 14px;
+    line-height: 1.4; background: transparent; border-color: transparent;
+    color: var(--muted); }
+  #close:hover { color: #c0392b; background: rgba(192, 57, 43, .08); }
+
+  #graph { display: flex; width: 100%; flex: 1; min-height: 0;
+    overflow: auto; background: var(--bg); cursor: grab; }
+  #graph.panning { cursor: grabbing; }
+  #graph .mermaid { flex: none; margin: auto; }
+  #graph .mermaid svg { display: block; }
+  #graph .edgeLabel { background: #ffffff; color: var(--muted); font-size: 11px; }
+  #graph .edge-pattern-dotted { stroke-dasharray: 6 4 !important; }
+  /* Incremental-change highlights (same rules as the main window). */
+  @keyframes codemap-blink { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  #graph g.node.modifiedClass { animation: codemap-blink .9s ease-in-out infinite; }
+  #graph g.node.modifiedClass rect {
+    fill: #fff8dc !important; stroke: #f1c40f !important;
+    stroke-width: 3px !important;
+  }
+  #graph g.node.modifiedClass * { color: #1a1a1a !important; }
+  #graph g.node.addedClass rect {
+    stroke: #2ecc71 !important; stroke-width: 2.5px !important;
+  }
+  #graph g.node.removedClass rect {
+    stroke: #e74c3c !important; stroke-width: 2px !important;
+    stroke-dasharray: 5 3 !important;
+  }
+
+  .zoom-group { display: inline-flex; align-items: center; gap: 4px; }
+  .zoom-group button { padding: 2px 8px; min-width: 28px; }
+  #zoom-reset { min-width: 48px; font-size: 12px; }
+
+  #status { position: absolute; right: 20px; bottom: 16px;
+    color: var(--muted); font-size: 12px; }
+  #legend { position: absolute; left: 20px; bottom: 16px;
+    color: var(--muted); font-size: 11px; white-space: nowrap; }
+  #legend .sw { display: inline-block; width: 10px; height: 10px;
+    margin: 0 2px 0 8px; vertical-align: -1px; border: 1px solid #000; }
+
+  /* Border resize handles (transparent, each with its own cursor). */
+  .rh { position: absolute; z-index: 5; }
+  .rh[data-edges="n"] { top: 0; left: 12px; right: 12px; height: 12px; cursor: ns-resize; }
+  .rh[data-edges="s"] { bottom: 0; left: 12px; right: 12px; height: 12px; cursor: ns-resize; }
+  .rh[data-edges="e"] { top: 12px; bottom: 12px; right: 0; width: 12px; cursor: ew-resize; }
+  .rh[data-edges="w"] { top: 12px; bottom: 12px; left: 0; width: 12px; cursor: ew-resize; }
+  .rh[data-edges="nw"] { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+  .rh[data-edges="ne"] { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+  .rh[data-edges="sw"] { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+  .rh[data-edges="se"] { bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+</style>
+</head>
+<body>
+  <div id="resize-frame">
+    <header>
+      <h1>CodeMap · 微观</h1>
+      <span id="micro-title">加载中…</span>
+      <span class="zoom-group">
+        <button id="zoom-out" title="缩小 (滚轮向下)">−</button>
+        <button id="zoom-reset" title="重置缩放 (Ctrl+0)">100%</button>
+        <button id="zoom-in" title="放大 (滚轮向上)">＋</button>
+      </span>
+      <div class="stats"><span id="view-count">–</span></div>
+      <button id="close" title="收起 (Esc)">✕</button>
+    </header>
+    <div id="graph"></div>
+    <div id="status">加载中…</div>
+    <div id="legend">
+      <span class="sw" style="background:#8E5FD7"></span>类
+      <span class="sw" style="background:#D64545"></span>基类
+      <span class="sw" style="background:#23272E"></span>文件
+      <span class="sw" style="background:#fff;border-color:#2ecc71"></span>新增
+      <span class="sw" style="background:#fff8dc;border-color:#f1c40f"></span>修改(闪烁)
+      <span class="sw" style="background:#fff;border-color:#e74c3c"></span>删除
+      <span>&nbsp;·&nbsp; 实线=继承 · 虚线=引用/CALLS(次数) · 滚轮缩放 · 拖动平移</span>
+    </div>
+    <div class="rh" data-edges="n"></div>
+    <div class="rh" data-edges="s"></div>
+    <div class="rh" data-edges="e"></div>
+    <div class="rh" data-edges="w"></div>
+    <div class="rh" data-edges="nw"></div>
+    <div class="rh" data-edges="ne"></div>
+    <div class="rh" data-edges="sw"></div>
+    <div class="rh" data-edges="se"></div>
+  </div>
+  <script src="mermaid.min.js"></script>
+  <script src="micro.js"></script>
+</body>
+</html>
