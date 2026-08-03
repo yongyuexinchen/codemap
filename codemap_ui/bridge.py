@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from . import semantic
-from .config import MIN_HEIGHT, MIN_WIDTH, get_db_path
+from .config import (LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, MIN_HEIGHT,
+                     MIN_WIDTH, get_db_path)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,8 @@ class Bridge:
         self._module_keys = [k for k, _, _ in self.modules]
         self._mod_name = {k: n for k, n, _ in self.modules}
         self._mod_icon = {k: i for k, _, i in self.modules}
+        # Push persisted/in-app LLM settings onto the semantic layer.
+        self._apply_llm_config()
 
     # ---- persisted UI state ---------------------------------------------
 
@@ -310,6 +313,47 @@ class Bridge:
                                  if other._module_keys else None)
 
     # ---- LLM semantic layer -------------------------------------------
+
+    def _apply_llm_config(self) -> None:
+        """Push persisted/in-app LLM settings onto the semantic layer.
+
+        Called at startup and after every settings change, so a key saved
+        from the app's settings dialog takes effect without a restart.
+        """
+        st = self._load_state()
+        semantic.configure(
+            api_key=st.get("llm_api_key", LLM_API_KEY),
+            base_url=st.get("llm_base_url", None),
+            model=st.get("llm_model", None))
+
+    def set_llm_config(self, api_key: str = "", base_url: str = "",
+                       model: str = "") -> dict:
+        """Save LLM settings from the app's settings dialog.
+
+        Persisted in the state file and applied immediately. An empty
+        ``api_key`` clears the in-app key (back to the env var / disabled);
+        the semantics session cache is dropped so the next get_semantics()
+        uses the new settings.
+        """
+        api_key = (api_key or "").strip()
+        base_url = (base_url or "").strip()
+        model = (model or "").strip()
+        self._save_state(llm_api_key=api_key,
+                         llm_base_url=base_url,
+                         llm_model=model)
+        self._apply_llm_config()
+        self._semantics = None  # re-generate with the new settings
+        return {"status": "ok", "has_key": bool(api_key)}
+
+    def get_llm_config(self) -> dict:
+        """Current LLM settings for the settings dialog (key included)."""
+        st = self._load_state()
+        return {
+            "api_key": st.get("llm_api_key", ""),
+            "base_url": st.get("llm_base_url", "") or LLM_BASE_URL,
+            "model": st.get("llm_model", "") or LLM_MODEL,
+            "env_key": bool(LLM_API_KEY),
+        }
 
     def get_semantics(self) -> dict | None:
         """LLM-derived Chinese business names + one-line duties per module.

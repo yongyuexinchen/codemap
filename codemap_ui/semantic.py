@@ -21,6 +21,41 @@ from .config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
+# Runtime LLM settings. Defaults come from config.py (which reads the
+# DEEPSEEK_API_KEY env var at import); the bridge overrides them from the
+# app's settings dialog (persisted in the state file) via configure(), so a
+# key entered in the UI takes effect immediately without a restart.
+_llm_settings = {
+    "base_url": LLM_BASE_URL,
+    "model": LLM_MODEL,
+    "api_key": LLM_API_KEY,
+    "timeout": LLM_TIMEOUT,
+}
+
+
+def configure(*, api_key: str | None = None,
+              base_url: str | None = None,
+              model: str | None = None,
+              timeout: int | None = None) -> None:
+    """Update runtime LLM settings; None keeps the current value.
+
+    An empty ``api_key`` disables the LLM; an empty ``base_url``/``model``
+    falls back to the config defaults.
+    """
+    if api_key is not None:
+        _llm_settings["api_key"] = api_key or None
+    if base_url is not None:
+        _llm_settings["base_url"] = (base_url or "").strip() or LLM_BASE_URL
+    if model is not None:
+        _llm_settings["model"] = (model or "").strip() or LLM_MODEL
+    if timeout is not None:
+        _llm_settings["timeout"] = int(timeout)
+
+
+def llm_config() -> dict:
+    """Current runtime LLM settings (api_key included — local app only)."""
+    return dict(_llm_settings)
+
 # Mirrors Bridge.module_of()'s legacy substring rules (the default repo's
 # fixed business modules), so summaries bucket files exactly like the
 # diagrams. SUPPORT is "everything else" and is filtered in Python.
@@ -148,11 +183,12 @@ def call_llm(summaries: dict) -> dict | None:
     timeout, non-200, or unparseable JSON — callers degrade gracefully.
     """
     print("LLM_CALL")
-    if not LLM_API_KEY:
-        logger.info("DEEPSEEK_API_KEY not set — skipping LLM call")
+    api_key = _llm_settings["api_key"]
+    if not api_key:
+        logger.info("LLM API key not configured — skipping call")
         return None
     body = json.dumps({
-        "model": LLM_MODEL,
+        "model": _llm_settings["model"],
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user",
@@ -163,13 +199,14 @@ def call_llm(summaries: dict) -> dict | None:
         "temperature": 0.3,
     }).encode("utf-8")
     req = urllib.request.Request(
-        f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
+        f"{_llm_settings['base_url'].rstrip('/')}/chat/completions",
         data=body,
         headers={"Content-Type": "application/json",
-                 "Authorization": f"Bearer {LLM_API_KEY}"},
+                 "Authorization": f"Bearer {api_key}"},
         method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as resp:
+        with urllib.request.urlopen(req,
+                                    timeout=_llm_settings["timeout"]) as resp:
             if resp.status != 200:
                 logger.warning("LLM HTTP %s", resp.status)
                 return None

@@ -28,6 +28,13 @@
   var moduleSearch = document.getElementById('module-search');
   var moduleListEl = document.getElementById('module-list');
   var popMicroBtn = document.getElementById('pop-micro');
+  var settingsBtn = document.getElementById('settings');
+  var settingsOverlay = document.getElementById('settings-overlay');
+  var llmKeyEl = document.getElementById('llm-api-key');
+  var llmBaseEl = document.getElementById('llm-base-url');
+  var llmModelEl = document.getElementById('llm-model');
+  var llmStatusEl = document.getElementById('llm-status');
+  var llmSaveBtn = document.getElementById('llm-save');
 
   var state = { view: 'macro', module: 'AUTH', macroData: null,
     microData: null, activeVp: null, lastChange: null };
@@ -875,6 +882,42 @@
   repoOverlayEl.addEventListener('mousedown', function (e) {
     e.stopPropagation();
   });
+
+  // ---- LLM settings dialog (⚙️) ---------------------------------------
+  function openSettings() {
+    llmStatusEl.textContent = '';
+    llmSaveBtn.disabled = false;
+    api().get_llm_config().then(function (c) {
+      llmKeyEl.value = c.api_key || '';
+      llmBaseEl.value = c.base_url || '';
+      llmModelEl.value = c.model || '';
+      settingsOverlay.hidden = false;
+      llmKeyEl.focus();
+      if (c.env_key && !c.api_key) {
+        llmStatusEl.textContent = '当前生效的是环境变量 DEEPSEEK_API_KEY；填写的值会覆盖它。';
+      }
+    }).catch(function () { llmStatusEl.textContent = '读取配置失败'; });
+  }
+  function closeSettings() { settingsOverlay.hidden = true; }
+
+  settingsBtn.addEventListener('click', openSettings);
+  document.getElementById('settings-cancel').addEventListener('click', closeSettings);
+  settingsOverlay.addEventListener('mousedown', function (e) {
+    e.stopPropagation();  // never start a window drag from the dialog
+  });
+  llmSaveBtn.addEventListener('click', function () {
+    llmSaveBtn.disabled = true;
+    api().set_llm_config(llmKeyEl.value, llmBaseEl.value, llmModelEl.value)
+      .then(function (r) {
+        llmStatusEl.textContent = (r && r.status === 'ok')
+          ? (r.has_key ? '已保存并生效 ✅' : '已保存（未启用 LLM 语义）')
+          : '保存失败：' + JSON.stringify(r);
+        llmSaveBtn.disabled = false;
+      }).catch(function (e) {
+        llmStatusEl.textContent = '保存失败：' + e;
+        llmSaveBtn.disabled = false;
+      });
+  });
   // Drag a repo folder onto the window to load it directly.
   window.addEventListener('dragover', function (e) { e.preventDefault(); });
   window.addEventListener('drop', function (e) {
@@ -1006,9 +1049,10 @@
   });
   window.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
-      // Close the repo panel first; only quit the app when nothing else
-      // is open (the panel's own ✕ / Esc affordance comes first).
+      // Close the repo/settings panel first; only quit the app when nothing
+      // else is open (the panel's own ✕ / Esc affordance comes first).
       if (repoOverlayEl && !repoOverlayEl.hidden) { closeRepoPanel(); return; }
+      if (settingsOverlay && !settingsOverlay.hidden) { closeSettings(); return; }
       closeWindow(); return;
     }
     if (e.ctrlKey && (e.key === '=' || e.key === '+')) {

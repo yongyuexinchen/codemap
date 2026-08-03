@@ -16,6 +16,7 @@ from pathlib import Path
 
 import webview
 
+from . import semantic
 from .bridge import CODEMAP_ROOT, REPO_ROOT, Bridge, MicroBridge
 from .config import (
     APP_TITLE,
@@ -167,6 +168,10 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
         state_file.unlink(missing_ok=True)
     except OSError:
         pass
+    # Isolate the LLM: even if the user configured an API key in the app,
+    # the smoke run must never hit the network (the key is restored at the
+    # end together with the state file).
+    semantic.configure(api_key=None)
     result: dict = {}
 
     def on_loaded(*_args) -> None:  # noqa: ANN002 - event args vary by pywebview
@@ -753,15 +758,32 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
                      "mtime": lr.get("mtime")}, ensure_ascii=False)
 
                 # ---- LLM semantic layer ---------------------------------
-                # Assertion 1: with no DEEPSEEK_API_KEY configured,
-                # get_semantics() returns None (front-end keeps the existing
-                # module names) and never raises.
+                # Assertion 1: with no API key configured, get_semantics()
+                # returns None (front-end keeps the existing module names)
+                # and never raises.
                 # (Assertion 2 — a real LLM call returns a dict containing a
                 # "modules" key — is a manual check the user runs once they
-                # export DEEPSEEK_API_KEY; deliberately not mocked here.)
+                # configure a key in the ⚙️ settings dialog or export
+                # DEEPSEEK_API_KEY; deliberately not mocked here.)
                 sem = bridge.get_semantics()
                 assert sem is None, sem
                 result["semantics"] = repr(sem)
+                # LLM settings dialog round-trip: set -> persisted -> read
+                # back -> clear (all in-memory; no network involved).
+                r = bridge.set_llm_config(
+                    "sk-test", "https://api.deepseek.com/v1",
+                    "deepseek-v4-flash")
+                assert r.get("status") == "ok" and r.get("has_key"), r
+                got = bridge.get_llm_config()
+                assert got["api_key"] == "sk-test", got
+                assert got["base_url"].endswith("/v1"), got
+                assert got["model"] == "deepseek-v4-flash", got
+                r2 = bridge.set_llm_config("")
+                assert r2.get("status") == "ok" and not r2.get("has_key"), r2
+                assert bridge.get_llm_config()["api_key"] == "", got
+                assert semantic.llm_config()["api_key"] is None
+                result["llm_cfg"] = json.dumps(
+                    {"roundtrip": "ok", "env_key": got["env_key"]})
 
                 # graph must be fully restored to the pre-edit baseline
                 final_nodes = bridge._snapshot_nodes()
@@ -805,7 +827,8 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
     webview.start()
 
     # Restore the user's persisted state (the smoke run deliberately started
-    # from a blank first-run, so whatever it saved during the run is fake).
+    # from a blank first-run, so whatever it saved during the run is fake),
+    # then re-apply the real LLM settings (env var / saved key).
     try:
         if state_backup is None:
             state_file.unlink(missing_ok=True)
@@ -813,6 +836,7 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
             state_file.write_bytes(state_backup)
     except OSError:  # pragma: no cover - best-effort restore only
         pass
+    bridge._apply_llm_config()
 
     print("SMOKE title:", result.get("title"))
     print("SMOKE blank:", result.get("blank"))
@@ -859,6 +883,7 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
     print("SMOKE macro_change:", result.get("macro_change"))
     print("SMOKE load_repo_roundtrip:", result.get("load_repo_roundtrip"))
     print("SMOKE semantics:", result.get("semantics"))
+    print("SMOKE llm_cfg:", result.get("llm_cfg"))
     print("SMOKE macro_status:", result.get("macro_status"))
     print("SMOKE final_nodes:", result.get("final_nodes"))
     print("SMOKE git_clean:", result.get("git_clean"))

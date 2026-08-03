@@ -156,10 +156,10 @@
 
   /* "Open project" modal: load any repo path from inside the app (paste,
      recent list, or drag-drop) without editing any code. */
-  #repo-overlay { position: fixed; inset: 0; z-index: 200;
+  #repo-overlay, #settings-overlay { position: fixed; inset: 0; z-index: 200;
     background: rgba(20, 24, 30, .35); display: flex;
     align-items: center; justify-content: center; }
-  #repo-overlay[hidden] { display: none; }
+  #repo-overlay[hidden], #settings-overlay[hidden] { display: none; }
   .repo-card { width: 480px; max-width: calc(100% - 80px);
     background: #fff; border: 1px solid var(--line); border-radius: 10px;
     box-shadow: 0 12px 40px rgba(0, 0, 0, .22); padding: 16px 18px; }
@@ -172,9 +172,15 @@
     text-overflow: ellipsis; }
   .repo-card label { display: block; font-size: 12px; color: var(--muted);
     margin-bottom: 4px; }
-  #repo-path { width: 100%; padding: 7px 10px; font-size: 13px;
+  #repo-path, #llm-api-key, #llm-base-url, #llm-model { width: 100%;
+    padding: 7px 10px; font-size: 13px;
     border: 1px solid #d8dce2; border-radius: 5px; outline: none; }
-  #repo-path:focus { border-color: var(--accent); }
+  #repo-path:focus, #llm-api-key:focus, #llm-base-url:focus,
+  #llm-model:focus { border-color: var(--accent); }
+  .settings-desc { font-size: 12px; color: var(--muted); line-height: 1.6;
+    margin-bottom: 10px; }
+  .settings-desc code { background: var(--panel); padding: 0 3px;
+    border-radius: 3px; }
   .repo-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
   .repo-actions .primary { background: var(--accent); color: #fff;
     border-color: var(--accent); }
@@ -208,6 +214,7 @@
       </div>
       <button id="pop-micro" title="把微观图弹出为独立窗口">⧉ 弹出</button>
       <button id="open-repo" title="加载另一个项目（粘贴路径 / 选最近项目 / 把文件夹拖进窗口）">📂 打开项目</button>
+      <button id="settings" title="LLM 设置（中文模块名语义层）">⚙️</button>
       <button id="refresh">刷新</button>
       <span class="zoom-group">
         <button id="zoom-out" title="缩小 (滚轮向下)">−</button>
@@ -258,6 +265,31 @@
       <div class="repo-status" id="repo-status"></div>
       <div id="repo-recents" class="repo-recents"></div>
       <div class="repo-hint">也可以把仓库文件夹直接拖进窗口，自动填入路径并加载（首次加载会自动构建图谱）。</div>
+    </div>
+  </div>
+  <div id="settings-overlay" hidden>
+    <div class="repo-card" id="settings-card">
+      <div class="repo-head">
+        <span>⚙️ LLM 设置</span>
+        <button id="settings-cancel" title="关闭 (Esc)">✕</button>
+      </div>
+      <div class="settings-desc">用于给每个业务模块生成<b>中文业务名</b>与<b>一句话职责</b>（DeepSeek API）。
+        不配置时保持原有模块名，其余功能完全不受影响。</div>
+      <label for="llm-api-key">API Key</label>
+      <input id="llm-api-key" type="password" placeholder="sk-…（留空 = 不启用）"
+             autocomplete="off" spellcheck="false">
+      <label for="llm-base-url">接口地址</label>
+      <input id="llm-base-url" type="text" placeholder="https://api.deepseek.com/v1"
+             autocomplete="off" spellcheck="false">
+      <label for="llm-model">模型</label>
+      <input id="llm-model" type="text" placeholder="deepseek-v4-flash"
+             autocomplete="off" spellcheck="false">
+      <div class="repo-actions">
+        <button id="llm-save" class="primary">保存</button>
+      </div>
+      <div class="repo-status" id="llm-status"></div>
+      <div class="repo-hint">Key 仅保存在本机 <code>~/.codemap_state.json</code>，不会上传。
+        保存后立即生效：下次加载项目并请求模块语义时使用此配置。</div>
     </div>
   </div>
   <script src="mermaid.min.js"></script>
