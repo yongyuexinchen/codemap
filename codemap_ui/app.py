@@ -154,11 +154,54 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
                 micro_window: webview.Window,
                 micro_bridge: MicroBridge) -> None:
     """Open the windows, verify the views/bridge, then close."""
+    # First-run state: make sure boot sees NO saved repo, so the blank
+    # "no project" state is exercised (not an auto-loaded last repo).
+    # Snapshot the real state first so the smoke run can restore it after,
+    # instead of leaving the user's "last repo" pointing at the test repo.
+    state_file = Path.home() / ".codemap_state.json"
+    try:
+        state_backup = state_file.read_bytes() if state_file.exists() else None
+    except OSError:
+        state_backup = None
+    try:
+        state_file.unlink(missing_ok=True)
+    except OSError:
+        pass
     result: dict = {}
 
     def on_loaded(*_args) -> None:  # noqa: ANN002 - event args vary by pywebview
-        time.sleep(4)  # allow the async get_macro() round-trip + render to finish
+        time.sleep(2)  # boot: last_repo() round-trip + blank-state render
         try:
+            # ---- first run (no saved repo): blank state, not the default --
+            result["blank"] = window.evaluate_js(
+                "JSON.stringify({"
+                "svg: !!document.querySelector('#graph svg'),"
+                "blank: !!document.querySelector('#graph .blank-state'),"
+                "searchDisabled: document.getElementById('module-search').disabled,"
+                "status: document.getElementById('status').textContent})")
+            blank1 = json.loads(result["blank"])
+            assert blank1["blank"] and not blank1["svg"], (
+                "first run must show the blank no-project state, got %s"
+                % result["blank"])
+            assert blank1["searchDisabled"], (
+                "module picker must be disabled while no repo is open: %s"
+                % result["blank"])
+            # Load the default repo through the in-app flow (panel -> path
+            # -> load), the same steps a first-time user takes.
+            window.evaluate_js(
+                "(function(){"
+                "document.getElementById('open-repo').click();"
+                "var i=document.getElementById('repo-path');"
+                "i.value=%s;"
+                "document.getElementById('repo-load').click();"
+                "return 'ok';})()" % json.dumps(REPO_ROOT))
+            time.sleep(6)  # load_repo round-trip + module derive + render
+            result["after_load"] = window.evaluate_js(
+                "JSON.stringify({"
+                "blank: !!document.querySelector('#graph .blank-state'),"
+                "svg: !!document.querySelector('#graph svg'),"
+                "searchDisabled: document.getElementById('module-search').disabled,"
+                "status: document.getElementById('status').textContent})")
             result["title"] = window.evaluate_js("document.title")
             result["status"] = window.evaluate_js(
                 "document.getElementById('status').textContent")
@@ -176,6 +219,16 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
                 "function(e){return e.textContent;}).filter(function(t){return t.trim().length>0;}).join(','),"
                 "orthogonal: Array.from(document.querySelectorAll('#graph path')).every("
                 "function(p){var d=p.getAttribute('d')||'';return !/[CSQAT]/i.test(d);}),"
+                "arrowOrtho: Array.from(document.querySelectorAll('#graph path.flowchart-link')).every("
+                "function(p){var re=/[ML]\\s*([-\\d.eE+]+)[,\\s]+([-\\d.eE+]+)/g,m,pts=[];"
+                "while((m=re.exec(p.getAttribute('d')||''))){pts.push([+m[1],+m[2]]);}"
+                "if(pts.length<2)return true;"
+                "var x=pts[pts.length-1][0],y=pts[pts.length-1][1],dx=0,dy=0;"
+                "for(var i=pts.length-2;i>=0;i--){dx=x-pts[i][0];dy=y-pts[i][1];if(dx||dy)break;}"
+                "if(!dx&&!dy)return true;"
+                "if(dx&&dy)return true;"
+                "var want=dx>0?'r':dx<0?'l':(dy>0?'d':'u');"
+                "return (getComputedStyle(p).markerEnd||'').indexOf('codemap-arrow-'+want)!==-1;}),"
                 "bodyBg: getComputedStyle(document.body).backgroundColor,"
                 "clusterFill: (function(){var r=document.querySelector('#graph g.cluster rect');"
                 "return r?getComputedStyle(r).fill:null;})(),"
@@ -194,6 +247,9 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
             macro1 = json.loads(result["macro"])
             assert macro1["orthogonal"], (
                 "macro edges must be strictly orthogonal: %s"
+                % result["macro"])
+            assert macro1["arrowOrtho"], (
+                "macro arrowheads must point along the final segment: %s"
                 % result["macro"])
             # ---- zoom: Ctrl+wheel zooms, reset returns to 100% fit ---------
             result["zoom0"] = window.evaluate_js(
@@ -255,6 +311,16 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
                 "'#graph path.edge-pattern-dotted,#graph path.edge-pattern-dashed').length,"
                 "orthogonal: Array.from(document.querySelectorAll('#graph path')).every("
                 "function(p){var d=p.getAttribute('d')||'';return !/[CSQAT]/i.test(d);}),"
+                "arrowOrtho: Array.from(document.querySelectorAll('#graph path.flowchart-link')).every("
+                "function(p){var re=/[ML]\\s*([-\\d.eE+]+)[,\\s]+([-\\d.eE+]+)/g,m,pts=[];"
+                "while((m=re.exec(p.getAttribute('d')||''))){pts.push([+m[1],+m[2]]);}"
+                "if(pts.length<2)return true;"
+                "var x=pts[pts.length-1][0],y=pts[pts.length-1][1],dx=0,dy=0;"
+                "for(var i=pts.length-2;i>=0;i--){dx=x-pts[i][0];dy=y-pts[i][1];if(dx||dy)break;}"
+                "if(!dx&&!dy)return true;"
+                "if(dx&&dy)return true;"
+                "var want=dx>0?'r':dx<0?'l':(dy>0?'d':'u');"
+                "return (getComputedStyle(p).markerEnd||'').indexOf('codemap-arrow-'+want)!==-1;}),"
                 "nodeFills: JSON.stringify(Array.from(new Set(Array.from("
                 "document.querySelectorAll('#graph g.node rect')).filter("
                 "function(r){return r.getBoundingClientRect().width>0 "
@@ -267,6 +333,9 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
             micro1 = json.loads(result["micro"])
             assert micro1["orthogonal"], (
                 "micro edges must be strictly orthogonal: %s" % result["micro"])
+            assert micro1["arrowOrtho"], (
+                "micro arrowheads must point along the final segment: %s"
+                % result["micro"])
             # ---- explicit view switch: 「宏观」button -> macro view --------
             window.evaluate_js("document.getElementById('view-macro').click()")
             time.sleep(2)
@@ -724,7 +793,19 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
     window.events.loaded += on_loaded
     webview.start()
 
+    # Restore the user's persisted state (the smoke run deliberately started
+    # from a blank first-run, so whatever it saved during the run is fake).
+    try:
+        if state_backup is None:
+            state_file.unlink(missing_ok=True)
+        else:
+            state_file.write_bytes(state_backup)
+    except OSError:  # pragma: no cover - best-effort restore only
+        pass
+
     print("SMOKE title:", result.get("title"))
+    print("SMOKE blank:", result.get("blank"))
+    print("SMOKE after_load:", result.get("after_load"))
     print("SMOKE status:", result.get("status"))
     print("SMOKE counts:", result.get("counts"))
     print("SMOKE macro:", result.get("macro"))

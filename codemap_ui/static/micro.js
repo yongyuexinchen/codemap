@@ -179,10 +179,40 @@
     zoomResetBtn.textContent = Math.round(state.zoom * 100) + '%';
   }
 
-  // Normalise the arrowhead (same helper as the main window): one clean
-  // triangle marker that every flowchart edge must use, so arrows sit
-  // exactly on the end of the orthogonal line.
-  function installArrowMarker(svg) {
+  // Orthogonal arrowheads (same fix as the main window): mermaid ends some
+  // step-curved edges with duplicate/zero-length final points, where
+  // `orient="auto"` has no defined direction — the arrow then renders
+  // sideways off the line. Measure each edge's last real segment and assign
+  // a direction-specific marker (r/l/u/d) with a baked-in triangle.
+  var ARROW_MARKERS = {
+    r: { d: 'M 0 0 L 10 5 L 0 10 z', refX: 8.5, refY: 5 },  // ->
+    l: { d: 'M 10 0 L 0 5 L 10 10 z', refX: 1.5, refY: 5 }, // <-
+    d: { d: 'M 0 0 L 5 10 L 10 0 z', refX: 5, refY: 8.5 },  // down
+    u: { d: 'M 0 10 L 5 0 L 10 10 z', refX: 5, refY: 1.5 }  // up
+  };
+
+  function finalSegmentDir(path) {
+    var re = /[ML]\s*([-\d.eE+]+)[,\s]+([-\d.eE+]+)/g;
+    var m, pts = [];
+    while ((m = re.exec(path.getAttribute('d') || ''))) {
+      pts.push([+m[1], +m[2]]);
+    }
+    if (pts.length < 2) { return null; }
+    var x = pts[pts.length - 1][0], y = pts[pts.length - 1][1];
+    var dx = 0, dy = 0;
+    for (var i = pts.length - 2; i >= 0; i--) {
+      dx = x - pts[i][0];
+      dy = y - pts[i][1];
+      if (dx !== 0 || dy !== 0) { break; }
+    }
+    if (dx === 0 && dy === 0) { return null; }
+    if (dx !== 0 && dy !== 0) { return null; }
+    if (dx > 0) { return 'r'; }
+    if (dx < 0) { return 'l'; }
+    return dy > 0 ? 'd' : 'u';
+  }
+
+  function installArrowMarkers(svg) {
     if (!svg || svg.querySelector('marker#codemap-arrow')) { return; }
     var NS = 'http://www.w3.org/2000/svg';
     var defs = svg.querySelector('defs');
@@ -190,19 +220,32 @@
       defs = document.createElementNS(NS, 'defs');
       svg.insertBefore(defs, svg.firstChild);
     }
-    var marker = document.createElementNS(NS, 'marker');
-    marker.setAttribute('id', 'codemap-arrow');
-    marker.setAttribute('viewBox', '0 0 10 10');
-    marker.setAttribute('refX', '8.5');
-    marker.setAttribute('refY', '5');
-    marker.setAttribute('markerWidth', '7');
-    marker.setAttribute('markerHeight', '7');
-    marker.setAttribute('orient', 'auto-start-reverse');
-    var arrow = document.createElementNS(NS, 'path');
-    arrow.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
-    arrow.setAttribute('fill', '#111111');
-    marker.appendChild(arrow);
-    defs.appendChild(marker);
+    function addMarker(id, spec) {
+      var marker = document.createElementNS(NS, 'marker');
+      marker.setAttribute('id', id);
+      marker.setAttribute('viewBox', '0 0 10 10');
+      marker.setAttribute('refX', String(spec.refX));
+      marker.setAttribute('refY', String(spec.refY));
+      marker.setAttribute('markerWidth', '7');
+      marker.setAttribute('markerHeight', '7');
+      var arrow = document.createElementNS(NS, 'path');
+      arrow.setAttribute('d', spec.d);
+      arrow.setAttribute('fill', '#111111');
+      marker.appendChild(arrow);
+      defs.appendChild(marker);
+    }
+    addMarker('codemap-arrow', { d: 'M 0 0 L 10 5 L 0 10 z',
+      refX: 8.5, refY: 5 });
+    Object.keys(ARROW_MARKERS).forEach(function (k) {
+      addMarker('codemap-arrow-' + k, ARROW_MARKERS[k]);
+    });
+    svg.querySelectorAll('path.flowchart-link').forEach(function (p) {
+      var dir = finalSegmentDir(p);
+      if (dir) {
+        p.style.setProperty('marker-end',
+          'url(#codemap-arrow-' + dir + ')', 'important');
+      }
+    });
   }
 
   function render() {
@@ -217,7 +260,7 @@
       var holder = document.createElement('div');
       holder.className = 'mermaid';
       holder.innerHTML = res.svg.replace(/<script[\s\S]*?<\/script>/gi, '');
-      installArrowMarker(holder.querySelector('svg'));
+      installArrowMarkers(holder.querySelector('svg'));
       graphEl.innerHTML = '';
       graphEl.appendChild(holder);
       state.zoom = 1; state.fitW = 0; state.fitH = 0;

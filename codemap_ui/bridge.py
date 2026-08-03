@@ -6,6 +6,7 @@ the return value and resolves the JS-side promise with it.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -18,6 +19,10 @@ from typing import Any
 from .config import MIN_HEIGHT, MIN_WIDTH, get_db_path
 
 logger = logging.getLogger(__name__)
+
+# Where the app remembers UI state between sessions (e.g. the last repo the
+# user opened, so the next launch restores it instead of starting blank).
+STATE_FILE = Path.home() / ".codemap_state.json"
 
 # Columns surfaced to the page. Keep payloads small but enough to render.
 NODE_COLS = (
@@ -82,6 +87,32 @@ class Bridge:
         self._module_keys = [k for k, _, _ in self.modules]
         self._mod_name = {k: n for k, n, _ in self.modules}
         self._mod_icon = {k: i for k, _, i in self.modules}
+
+    # ---- persisted UI state ---------------------------------------------
+
+    def _load_state(self) -> dict:
+        try:
+            data = json.loads(STATE_FILE.read_text("utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_state(self, **values: Any) -> None:
+        try:
+            data = self._load_state()
+            data.update(values)
+            STATE_FILE.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+        except OSError:  # read-only home dir etc. — non-fatal
+            logger.warning("Could not write state file %s", STATE_FILE)
+
+    def last_repo(self) -> dict:
+        """Repo path loaded in the previous session ('' when never opened).
+
+        The page asks this at boot: a saved path is re-opened automatically,
+        an empty one renders the blank "no project" state instead.
+        """
+        return {"repo": self._load_state().get("last_repo", "")}
 
     # ---- repo-aware path/module helpers ---------------------------------
 
@@ -174,6 +205,7 @@ class Bridge:
         self._last_snapshot = None
         self._change = None
         self._inherit_state(self._micro_bridge)
+        self._save_state(last_repo=self.repo_root)
         return {
             "status": "ok",
             "repo": self.repo_root,

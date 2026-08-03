@@ -120,7 +120,7 @@
     }
   }
 
-  function loadRepo(path) {
+  function loadRepo(path, auto) {
     if (!api()) { setStatus('pywebview 桥接不可用'); return; }
     repoLoading = true;
     repoLoadBtn.disabled = true;
@@ -129,7 +129,9 @@
       repoLoading = false;
       repoLoadBtn.disabled = false;
       if (!r || r.error || r.status !== 'ok') {
-        repoStatusEl.textContent = '加载失败: ' + ((r && r.error) || '未知错误');
+        var err = ((r && r.error) || '未知错误');
+        repoStatusEl.textContent = '加载失败: ' + err;
+        if (auto) { showBlank('无法打开上次的项目：' + err); }
         return;
       }
       var mods = (r.modules && r.modules.length)
@@ -143,6 +145,10 @@
       repoCurrentEl.textContent = r.repo;
       addRecentRepo(r.repo);
       closeRepoPanel();
+      moduleSearch.disabled = false;
+      popMicroBtn.disabled = false;
+      REFRESH_BTN.disabled = false;
+      armPolling();
       setStatus('已加载项目：' + r.repo);
       setViewButtons();
       renderView();
@@ -150,6 +156,7 @@
       repoLoading = false;
       repoLoadBtn.disabled = false;
       repoStatusEl.textContent = '加载失败: ' + err;
+      if (auto) { showBlank('无法打开上次的项目：' + err); }
     });
   }
 
@@ -456,11 +463,53 @@
     return L.join('\n');
   }
 
-  // Normalise the arrowhead. mermaid's default marker can sit slightly off
-  // the line end on step-curved edges, which reads as a "crooked" arrow;
-  // injecting one clean triangle marker and forcing every flowchart edge to
-  // use it keeps arrowheads pointing exactly along the last line segment.
-  function installArrowMarker(svg) {
+  // Orthogonal arrowheads. Every edge is an orthogonal polyline
+  // (curve:'step'), but mermaid ends some paths with duplicate/zero-length
+  // final segments — at such a vertex the SVG marker's `orient="auto"`
+  // direction is undefined, so the arrowhead can render pointing sideways
+  // off the line ("箭头不正交"). Instead of trusting the browser's tangent
+  // guess, we measure each edge's last non-degenerate segment and assign an
+  // explicit direction-specific marker (r/l/u/d) whose triangle direction is
+  // baked in — the arrow always points exactly along the final segment.
+  var ARROW_MARKERS = {
+    r: { d: 'M 0 0 L 10 5 L 0 10 z', refX: 8.5, refY: 5 },  // ->
+    l: { d: 'M 10 0 L 0 5 L 10 10 z', refX: 1.5, refY: 5 }, // <-
+    d: { d: 'M 0 0 L 5 10 L 10 0 z', refX: 5, refY: 8.5 },  // down
+    u: { d: 'M 0 10 L 5 0 L 10 10 z', refX: 5, refY: 1.5 }  // up
+  };
+
+  // 'r'|'l'|'u'|'d' for the last non-degenerate segment of a path, or null
+  // when there is no axis-aligned final segment (then orient="auto" stays).
+  function finalSegmentDir(path) {
+    var re = /[ML]\s*([-\d.eE+]+)[,\s]+([-\d.eE+]+)/g;
+    var m, pts = [];
+    while ((m = re.exec(path.getAttribute('d') || ''))) {
+      pts.push([+m[1], +m[2]]);
+    }
+    if (pts.length < 2) { return null; }
+    var x = pts[pts.length - 1][0], y = pts[pts.length - 1][1];
+    var dx = 0, dy = 0;
+    for (var i = pts.length - 2; i >= 0; i--) {
+      dx = x - pts[i][0];
+      dy = y - pts[i][1];
+      if (dx !== 0 || dy !== 0) { break; }  // skip duplicate end points
+    }
+    if (dx === 0 && dy === 0) { return null; }      // fully degenerate
+    if (dx !== 0 && dy !== 0) { return null; }      // diagonal: leave to auto
+    if (dx > 0) { return 'r'; }
+    if (dx < 0) { return 'l'; }
+    return dy > 0 ? 'd' : 'u';
+  }
+
+  function fixArrowHead(path) {
+    var dir = finalSegmentDir(path);
+    if (!dir) { return; }
+    // Inline !important beats the stylesheet fallback rule below.
+    path.style.setProperty('marker-end',
+      'url(#codemap-arrow-' + dir + ')', 'important');
+  }
+
+  function installArrowMarkers(svg) {
     if (!svg || svg.querySelector('marker#codemap-arrow')) { return; }
     var NS = 'http://www.w3.org/2000/svg';
     var defs = svg.querySelector('defs');
@@ -468,19 +517,29 @@
       defs = document.createElementNS(NS, 'defs');
       svg.insertBefore(defs, svg.firstChild);
     }
-    var marker = document.createElementNS(NS, 'marker');
-    marker.setAttribute('id', 'codemap-arrow');
-    marker.setAttribute('viewBox', '0 0 10 10');
-    marker.setAttribute('refX', '8.5');
-    marker.setAttribute('refY', '5');
-    marker.setAttribute('markerWidth', '7');
-    marker.setAttribute('markerHeight', '7');
-    marker.setAttribute('orient', 'auto-start-reverse');
-    var arrow = document.createElementNS(NS, 'path');
-    arrow.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
-    arrow.setAttribute('fill', PALETTE.line);
-    marker.appendChild(arrow);
-    defs.appendChild(marker);
+    function addMarker(id, spec) {
+      var marker = document.createElementNS(NS, 'marker');
+      marker.setAttribute('id', id);
+      marker.setAttribute('viewBox', '0 0 10 10');
+      marker.setAttribute('refX', String(spec.refX));
+      marker.setAttribute('refY', String(spec.refY));
+      marker.setAttribute('markerWidth', '7');
+      marker.setAttribute('markerHeight', '7');
+      // orient stays 0: the triangle's direction is baked into its geometry.
+      var arrow = document.createElementNS(NS, 'path');
+      arrow.setAttribute('d', spec.d);
+      arrow.setAttribute('fill', PALETTE.line);
+      marker.appendChild(arrow);
+      defs.appendChild(marker);
+    }
+    // Generic auto-oriented marker: CSS fallback for any path we cannot
+    // resolve to an axis-aligned direction (never happens on step curves).
+    addMarker('codemap-arrow', { d: 'M 0 0 L 10 5 L 0 10 z',
+      refX: 8.5, refY: 5 });
+    Object.keys(ARROW_MARKERS).forEach(function (k) {
+      addMarker('codemap-arrow-' + k, ARROW_MARKERS[k]);
+    });
+    svg.querySelectorAll('path.flowchart-link').forEach(fixArrowHead);
   }
 
   // ---- viewport: one scrollable container, own zoom + pan --------------
@@ -535,7 +594,7 @@
         var holder = document.createElement('div');
         holder.className = 'mermaid';
         holder.innerHTML = res.svg.replace(/<script[\s\S]*?<\/script>/gi, '');
-        installArrowMarker(holder.querySelector('svg'));
+        installArrowMarkers(holder.querySelector('svg'));
         container.innerHTML = '';
         container.appendChild(holder);
         vp.zoom = 1; vp.fitW = 0; vp.fitH = 0;
@@ -634,6 +693,8 @@
     window.__codemap_view = state.view;
     if (state.view === 'macro') {
       var m = state.macroData;
+      window.__codemap_nodes = m.stats.classes;
+      window.__codemap_edges = m.stats.total_edges;
       viewCountEl.innerHTML = '模块 <b>' + m.modules.length + '</b>' +
         ' · 跨模块依赖 <b>' + m.edges.length + '</b> 组 / ' +
         '<b>' + m.stats.cross_edges + '</b> 条';
@@ -693,12 +754,36 @@
   }
 
   // ---- boot --------------------------------------------------------------
+  // First run (no saved repo): render a blank "no project" state instead of
+  // auto-loading the default repo. If the previous session ended with a
+  // repo open, restore that path automatically.
+  function showBlank(msg) {
+    state.view = 'macro';
+    state.macroData = null;
+    state.microData = null;
+    setViewButtons();
+    hideModuleList();
+    moduleSearch.value = '';
+    moduleSearch.disabled = true;
+    popMicroBtn.disabled = true;
+    REFRESH_BTN.disabled = true;
+    viewCountEl.innerHTML = '未打开项目';
+    window.__codemap_view = 'macro';
+    graphEl.innerHTML =
+      '<div class="blank-state"><div class="blank-icon">🗂️</div>' +
+      '<div class="blank-title">未打开项目</div>' +
+      '<div class="blank-hint">点击右上角「📂 打开项目」粘贴仓库路径，' +
+      '或直接把仓库文件夹拖进窗口（首次加载会自动构建图谱）</div></div>';
+    setStatus(msg || '未打开项目 · 点击右上角「📂 打开项目」选择仓库');
+  }
+
   function boot() {
-    if (api()) {
-      armPolling();
-      loadMacro();
-    }
-    else { setStatus('pywebview 桥接不可用'); }
+    if (!api()) { setStatus('pywebview 桥接不可用'); return; }
+    api().last_repo().then(function (s) {
+      var last = (s && s.repo) || '';
+      if (last) { loadRepo(last, true); }   // restore last session's repo
+      else { showBlank(); }                 // first run: blank state
+    }).catch(function () { showBlank(); });
   }
 
   window.addEventListener('pywebviewready', boot);
@@ -746,8 +831,10 @@
       .catch(function (err) { setStatus('刷新失败: ' + err); });
   }
 
+  var pollArmed = false;
   function armPolling() {
-    if (!api()) { return; }
+    if (!api() || pollArmed) { return; }  // only one mtime poll per session
+    pollArmed = true;
     api().stat().then(function (s) {
       if (s && !s.error && s.mtime != null) { lastDbMtime = s.mtime; }
       if (s && s.repo && repoCurrentEl) { repoCurrentEl.textContent = s.repo; }

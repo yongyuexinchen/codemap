@@ -78,6 +78,14 @@
      lets the container scroll from the top-left once it is zoomed past it. */
   #graph .mermaid { flex: none; margin: auto; }
   #graph .mermaid svg { display: block; }
+  /* First-run "no project" state: a centered hint in the empty viewport. */
+  .blank-state { margin: auto; text-align: center; color: var(--muted);
+    padding: 40px; max-width: 420px; }
+  .blank-state .blank-icon { font-size: 44px; margin-bottom: 12px; }
+  .blank-state .blank-title { font-size: 15px; font-weight: 600;
+    color: var(--fg); margin-bottom: 6px; }
+  .blank-state .blank-hint { font-size: 12px; line-height: 1.8;
+    color: #a4aab2; }
   #graph .edgeLabel { background: #ffffff; color: var(--muted); font-size: 11px; }
   /* mermaid v10 renders `-.->` ref edges as edge-pattern-dotted with a 2px
      dot dasharray; override to a clean dashed line (still orthogonal). */
