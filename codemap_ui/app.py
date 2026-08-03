@@ -191,6 +191,10 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
                 "gw:Math.round(gr.width),gh:Math.round(gr.height)});})(),"
                 "view: window.__codemap_view,"
                 "status: document.getElementById('status').textContent})")
+            macro1 = json.loads(result["macro"])
+            assert macro1["orthogonal"], (
+                "macro edges must be strictly orthogonal: %s"
+                % result["macro"])
             # ---- zoom: Ctrl+wheel zooms, reset returns to 100% fit ---------
             result["zoom0"] = window.evaluate_js(
                 "JSON.stringify({z: window.__codemap_zoom,"
@@ -260,6 +264,9 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
                 "function(e){return e.textContent;}).filter(function(t){return t.trim().length>0;}).join(','),"
                 "microActive: document.getElementById('view-micro').classList.contains('active'),"
                 "status: document.getElementById('status').textContent})")
+            micro1 = json.loads(result["micro"])
+            assert micro1["orthogonal"], (
+                "micro edges must be strictly orthogonal: %s" % result["micro"])
             # ---- explicit view switch: 「宏观」button -> macro view --------
             window.evaluate_js("document.getElementById('view-macro').click()")
             time.sleep(2)
@@ -557,7 +564,7 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
                     "document.getElementById('refresh').click(); 'ok'")
                 time.sleep(4)  # CRG update (~0.8 s) + re-pull + render
                 snap_after = bridge._snapshot_nodes()
-                diff = Bridge._diff_snapshots(snap_before, snap_after)
+                diff = bridge._diff_snapshots(snap_before, snap_after)
                 q_added = set(diff["by_qn"]["added"])
                 q_removed = set(diff["by_qn"]["removed"])
                 q_modified = set(diff["by_qn"]["modified"])
@@ -660,6 +667,22 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
                     "||(favNode.indexOf('~修改')!==-1)"
                     "||(favNode.indexOf('-删除')!==-1)):null};})())")
 
+                # ---- in-app repo load: round-trip the default repo --------
+                # load_repo must accept the same path as the hardcoded
+                # REPO_ROOT, restore the fixed 5-module split, and hand back
+                # a fresh macro without triggering a rebuild.
+                lr = bridge.load_repo(REPO_ROOT)
+                assert lr.get("status") == "ok", lr
+                assert [m["key"] for m in lr["modules"]] == \
+                    ["AUTH", "NEWS", "FAV", "HIST", "SUPPORT"], lr
+                assert len(lr["macro"]["modules"]) == 5, lr
+                result["load_repo_roundtrip"] = json.dumps(
+                    {"status": lr["status"], "repo": lr["repo"],
+                     "modules": [m["key"] for m in lr["modules"]],
+                     "macro_modules": len(lr["macro"]["modules"]),
+                     "macro_edges": len(lr["macro"]["edges"]),
+                     "mtime": lr.get("mtime")}, ensure_ascii=False)
+
                 # graph must be fully restored to the pre-edit baseline
                 final_nodes = bridge._snapshot_nodes()
                 restored_hash = next(
@@ -742,6 +765,7 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
     print("SMOKE hl_auto:", result.get("hl_auto"))
     print("SMOKE hl_macro:", result.get("hl_macro"))
     print("SMOKE macro_change:", result.get("macro_change"))
+    print("SMOKE load_repo_roundtrip:", result.get("load_repo_roundtrip"))
     print("SMOKE macro_status:", result.get("macro_status"))
     print("SMOKE final_nodes:", result.get("final_nodes"))
     print("SMOKE git_clean:", result.get("git_clean"))

@@ -73,7 +73,8 @@
   // ghost badges (functions are folded into classes, not drawn as nodes).
   function buildMicro(data) {
     var mod = data.module;
-    var L = ['flowchart TB', '  %% CodeMap 微观：' + mod.name + ' 类图',
+    var L = ['%%{init: {"flowchart": {"curve": "step"}}}%%',
+      'flowchart TB', '  %% CodeMap 微观：' + mod.name + ' 类图',
       '  classDef addedClass fill:#ffffff,stroke:#2ecc71,stroke-width:2.5,color:#1a1a1a',
       '  classDef modifiedClass fill:#fff8dc,stroke:#f1c40f,stroke-width:2.5,color:#1a1a1a',
       '  classDef removedClass fill:#ffffff,stroke:#e74c3c,stroke-width:2,color:#e74c3c'];
@@ -178,6 +179,32 @@
     zoomResetBtn.textContent = Math.round(state.zoom * 100) + '%';
   }
 
+  // Normalise the arrowhead (same helper as the main window): one clean
+  // triangle marker that every flowchart edge must use, so arrows sit
+  // exactly on the end of the orthogonal line.
+  function installArrowMarker(svg) {
+    if (!svg || svg.querySelector('marker#codemap-arrow')) { return; }
+    var NS = 'http://www.w3.org/2000/svg';
+    var defs = svg.querySelector('defs');
+    if (!defs) {
+      defs = document.createElementNS(NS, 'defs');
+      svg.insertBefore(defs, svg.firstChild);
+    }
+    var marker = document.createElementNS(NS, 'marker');
+    marker.setAttribute('id', 'codemap-arrow');
+    marker.setAttribute('viewBox', '0 0 10 10');
+    marker.setAttribute('refX', '8.5');
+    marker.setAttribute('refY', '5');
+    marker.setAttribute('markerWidth', '7');
+    marker.setAttribute('markerHeight', '7');
+    marker.setAttribute('orient', 'auto-start-reverse');
+    var arrow = document.createElementNS(NS, 'path');
+    arrow.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
+    arrow.setAttribute('fill', '#111111');
+    marker.appendChild(arrow);
+    defs.appendChild(marker);
+  }
+
   function render() {
     if (!state.data) { return; }
     var d = state.data;
@@ -190,6 +217,7 @@
       var holder = document.createElement('div');
       holder.className = 'mermaid';
       holder.innerHTML = res.svg.replace(/<script[\s\S]*?<\/script>/gi, '');
+      installArrowMarker(holder.querySelector('svg'));
       graphEl.innerHTML = '';
       graphEl.appendChild(holder);
       state.zoom = 1; state.fitW = 0; state.fitH = 0;

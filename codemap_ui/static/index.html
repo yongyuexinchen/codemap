@@ -132,6 +132,49 @@
   .rh[data-edges="ne"] { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
   .rh[data-edges="sw"] { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
   .rh[data-edges="se"] { bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+
+  /* Normalise arrowheads: force every flowchart edge to use the injected
+     codemap-arrow marker so arrows sit cleanly on the end of the
+     (orthogonal) line instead of drifting off it. */
+  #graph path.flowchart-link { marker-end: url(#codemap-arrow) !important; }
+
+  /* "Open project" modal: load any repo path from inside the app (paste,
+     recent list, or drag-drop) without editing any code. */
+  #repo-overlay { position: fixed; inset: 0; z-index: 200;
+    background: rgba(20, 24, 30, .35); display: flex;
+    align-items: center; justify-content: center; }
+  #repo-overlay[hidden] { display: none; }
+  .repo-card { width: 480px; max-width: calc(100% - 80px);
+    background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .22); padding: 16px 18px; }
+  .repo-head { display: flex; align-items: center;
+    justify-content: space-between; font-weight: 600; margin-bottom: 10px; }
+  .repo-current-label { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+  .repo-current { font-size: 12px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px;
+    margin-bottom: 12px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .repo-card label { display: block; font-size: 12px; color: var(--muted);
+    margin-bottom: 4px; }
+  #repo-path { width: 100%; padding: 7px 10px; font-size: 13px;
+    border: 1px solid #d8dce2; border-radius: 5px; outline: none; }
+  #repo-path:focus { border-color: var(--accent); }
+  .repo-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+  .repo-actions .primary { background: var(--accent); color: #fff;
+    border-color: var(--accent); }
+  .repo-actions .primary:hover { background: #3e7de8; }
+  .repo-actions .primary:disabled { opacity: .6; cursor: default; }
+  .repo-status { margin-top: 8px; font-size: 12px; color: #c0392b;
+    min-height: 16px; white-space: pre-wrap; word-break: break-all; }
+  .repo-recents { margin-top: 10px; border-top: 1px dashed var(--line);
+    padding-top: 8px; }
+  .repo-recents .recent-label { color: var(--muted); font-size: 11px;
+    margin-bottom: 4px; }
+  .repo-recents .recent-item { font-size: 12px; padding: 4px 6px;
+    border-radius: 4px; cursor: pointer; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .repo-recents .recent-item:hover { background: #f0f4ff; }
+  .repo-hint { margin-top: 10px; color: var(--muted); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -148,6 +191,7 @@
         <div id="module-list" class="module-list" hidden></div>
       </div>
       <button id="pop-micro" title="把微观图弹出为独立窗口">⧉ 弹出</button>
+      <button id="open-repo" title="加载另一个项目（粘贴路径 / 选最近项目 / 把文件夹拖进窗口）">📂 打开项目</button>
       <button id="refresh">刷新</button>
       <span class="zoom-group">
         <button id="zoom-out" title="缩小 (滚轮向下)">−</button>
@@ -179,6 +223,25 @@
     <div class="rh" data-edges="ne"></div>
     <div class="rh" data-edges="sw"></div>
     <div class="rh" data-edges="se"></div>
+  </div>
+  <div id="repo-overlay" hidden>
+    <div class="repo-card" id="repo-card">
+      <div class="repo-head">
+        <span>📂 打开项目</span>
+        <button id="repo-cancel" title="关闭 (Esc)">✕</button>
+      </div>
+      <div class="repo-current-label">当前项目</div>
+      <div class="repo-current" id="repo-current" title="">–</div>
+      <label for="repo-path">仓库路径</label>
+      <input id="repo-path" type="text" placeholder="E:/path/to/your/repo"
+             autocomplete="off" spellcheck="false">
+      <div class="repo-actions">
+        <button id="repo-load" class="primary">加载</button>
+      </div>
+      <div class="repo-status" id="repo-status"></div>
+      <div id="repo-recents" class="repo-recents"></div>
+      <div class="repo-hint">也可以把仓库文件夹直接拖进窗口，自动填入路径并加载（首次加载会自动构建图谱）。</div>
+    </div>
   </div>
   <script src="mermaid.min.js"></script>
   <script src="render.js"></script>

@@ -34,6 +34,125 @@
   var renderSeq = 0;
   var MIN_ZOOM = 0.5, MAX_ZOOM = 4, ZOOM_STEP = 1.2, FIT_PAD = 32;
 
+  // ---- in-app project loading ("📂 打开项目") ---------------------------
+  // Lets the user point the app at any repo path from inside the window:
+  // paste the path, pick a recent one, or drop the folder onto the window.
+  var repoOverlayEl = document.getElementById('repo-overlay');
+  var repoPathEl = document.getElementById('repo-path');
+  var repoCurrentEl = document.getElementById('repo-current');
+  var repoStatusEl = document.getElementById('repo-status');
+  var repoRecentsEl = document.getElementById('repo-recents');
+  var repoLoadBtn = document.getElementById('repo-load');
+  var repoLoading = false;
+  var RECENT_KEY = 'codemap_recent_repos';
+
+  function getRecents() {
+    try {
+      var r = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+      return Array.isArray(r) ? r : [];
+    } catch (e) { return []; }
+  }
+  function saveRecents(list) {
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); }
+    catch (e) { /* private mode / file:// - ignore */ }
+  }
+  function renderRecents() {
+    repoRecentsEl.innerHTML = '';
+    var list = getRecents();
+    if (!list.length) { return; }
+    var label = document.createElement('div');
+    label.className = 'recent-label';
+    label.textContent = '最近项目';
+    repoRecentsEl.appendChild(label);
+    list.forEach(function (p) {
+      var item = document.createElement('div');
+      item.className = 'recent-item';
+      item.textContent = p;
+      item.title = '加载 ' + p;
+      item.addEventListener('mousedown', function (e) {
+        e.preventDefault();
+        loadRepo(p);
+      });
+      repoRecentsEl.appendChild(item);
+    });
+  }
+  function addRecentRepo(path) {
+    var list = getRecents().filter(function (p) { return p !== path; });
+    list.unshift(path);
+    saveRecents(list.slice(0, 5));
+  }
+  function openRepoPanel() {
+    renderRecents();
+    repoOverlayEl.hidden = false;
+    repoStatusEl.textContent = '';
+    repoPathEl.focus();
+    repoPathEl.select();
+  }
+  function closeRepoPanel() {
+    repoOverlayEl.hidden = true;
+  }
+
+  // Rebuild the module picker from a loaded repo's module list. Known
+  // business modules (default repo) keep their Chinese/pinyin aliases so the
+  // fuzzy search behaves exactly as before; derived repos search by
+  // key + name + lowercased key.
+  function applyModules(mods) {
+    if (!mods || !mods.length) { return; }
+    var KNOWN_HAY = {
+      AUTH: 'auth 认证 renzheng login 登录 用户 鉴权 权限 账号',
+      NEWS: 'news 新闻 xinwen article 资讯 文章 内容 频道',
+      FAV: 'fav favorite 收藏 shoucang like 喜欢 关注',
+      HIST: 'hist history 历史 lishi 浏览 足迹 记录',
+      SUPPORT: 'support 支撑 zhicheng util 工具 公共 基础 组件 util'
+    };
+    MODULES = mods.map(function (m) {
+      var key = String(m.key);
+      return {
+        key: key,
+        icon: m.icon || '📁',
+        name: m.name || key,
+        hay: KNOWN_HAY[key] || (key + ' ' + (m.name || '') + ' ' + key.toLowerCase())
+      };
+    });
+    MODULE_KEYS = MODULES.map(function (m) { return m.key; });
+    if (MODULE_KEYS.indexOf(state.module) === -1) {
+      state.module = MODULE_KEYS[0];
+    }
+  }
+
+  function loadRepo(path) {
+    if (!api()) { setStatus('pywebview 桥接不可用'); return; }
+    repoLoading = true;
+    repoLoadBtn.disabled = true;
+    repoStatusEl.textContent = '正在加载项目（首次会构建图谱，可能需要几分钟）…';
+    api().load_repo(path).then(function (r) {
+      repoLoading = false;
+      repoLoadBtn.disabled = false;
+      if (!r || r.error || r.status !== 'ok') {
+        repoStatusEl.textContent = '加载失败: ' + ((r && r.error) || '未知错误');
+        return;
+      }
+      var mods = (r.modules && r.modules.length)
+        ? r.modules : ((r.macro && r.macro.modules) || []);
+      applyModules(mods);
+      state.macroData = r.macro;
+      state.view = 'macro';
+      lastDbMtime = r.mtime;
+      if (mods.length) { state.module = mods[0].key; }
+      setPickerValue(state.module);
+      repoCurrentEl.textContent = r.repo;
+      addRecentRepo(r.repo);
+      closeRepoPanel();
+      setStatus('已加载项目：' + r.repo);
+      setViewButtons();
+      renderView();
+    }).catch(function (err) {
+      repoLoading = false;
+      repoLoadBtn.disabled = false;
+      repoStatusEl.textContent = '加载失败: ' + err;
+    });
+  }
+
   // ---- searchable module picker ----------------------------------------
   // Replaces the native <select>, which is unreliable inside the frameless
   // WebView2 window. Typing fuzzy-filters (subsequence match) against the
@@ -226,7 +345,10 @@
 
   // ---- macro view: business modules ------------------------------------
   function buildMacro(data) {
-    var L = ['flowchart TB', '  %% CodeMap 宏观：业务模块图'];
+    // Diagram-level init directive: forces orthogonal step curves even if a
+    // future mermaid.initialize() merge drops the flowchart.curve setting.
+    var L = ['%%{init: {"flowchart": {"curve": "step"}}}%%',
+      'flowchart TB', '  %% CodeMap 宏观：业务模块图'];
     data.modules.forEach(function (mod) {
       L.push('  subgraph G' + mod.key + '["' + mod.icon + ' ' + esc(mod.name) + '"]');
       var lines = mod.files.map(function (f) { return esc(f); }).join('<br/>');
@@ -271,7 +393,8 @@
   // small green ghost badges next to the diagram.
   function buildMicro(data) {
     var mod = data.module;
-    var L = ['flowchart TB', '  %% CodeMap 微观：' + mod.name + ' 类图',
+    var L = ['%%{init: {"flowchart": {"curve": "step"}}}%%',
+      'flowchart TB', '  %% CodeMap 微观：' + mod.name + ' 类图',
       '  classDef addedClass fill:#ffffff,stroke:#2ecc71,stroke-width:2.5,color:#1a1a1a',
       '  classDef modifiedClass fill:#fff8dc,stroke:#f1c40f,stroke-width:2.5,color:#1a1a1a',
       '  classDef removedClass fill:#ffffff,stroke:#e74c3c,stroke-width:2,color:#e74c3c'];
@@ -333,6 +456,33 @@
     return L.join('\n');
   }
 
+  // Normalise the arrowhead. mermaid's default marker can sit slightly off
+  // the line end on step-curved edges, which reads as a "crooked" arrow;
+  // injecting one clean triangle marker and forcing every flowchart edge to
+  // use it keeps arrowheads pointing exactly along the last line segment.
+  function installArrowMarker(svg) {
+    if (!svg || svg.querySelector('marker#codemap-arrow')) { return; }
+    var NS = 'http://www.w3.org/2000/svg';
+    var defs = svg.querySelector('defs');
+    if (!defs) {
+      defs = document.createElementNS(NS, 'defs');
+      svg.insertBefore(defs, svg.firstChild);
+    }
+    var marker = document.createElementNS(NS, 'marker');
+    marker.setAttribute('id', 'codemap-arrow');
+    marker.setAttribute('viewBox', '0 0 10 10');
+    marker.setAttribute('refX', '8.5');
+    marker.setAttribute('refY', '5');
+    marker.setAttribute('markerWidth', '7');
+    marker.setAttribute('markerHeight', '7');
+    marker.setAttribute('orient', 'auto-start-reverse');
+    var arrow = document.createElementNS(NS, 'path');
+    arrow.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
+    arrow.setAttribute('fill', PALETTE.line);
+    marker.appendChild(arrow);
+    defs.appendChild(marker);
+  }
+
   // ---- viewport: one scrollable container, own zoom + pan --------------
   // #graph is the only viewport (macro and micro both render into it).
   // The fit/zoom/anchor math is identical to the original single-view
@@ -385,6 +535,7 @@
         var holder = document.createElement('div');
         holder.className = 'mermaid';
         holder.innerHTML = res.svg.replace(/<script[\s\S]*?<\/script>/gi, '');
+        installArrowMarker(holder.querySelector('svg'));
         container.innerHTML = '';
         container.appendChild(holder);
         vp.zoom = 1; vp.fitW = 0; vp.fitH = 0;
@@ -599,9 +750,10 @@
     if (!api()) { return; }
     api().stat().then(function (s) {
       if (s && !s.error && s.mtime != null) { lastDbMtime = s.mtime; }
+      if (s && s.repo && repoCurrentEl) { repoCurrentEl.textContent = s.repo; }
     });
     setInterval(function () {
-      if (!api()) { return; }
+      if (!api() || repoLoading) { return; }  // pause while loading a repo
       api().stat().then(function (s) {
         if (!s || s.error || s.mtime == null) { return; }
         if (lastDbMtime == null) { lastDbMtime = s.mtime; return; }
@@ -614,6 +766,53 @@
   }
 
   REFRESH_BTN.addEventListener('click', function () { doRefresh(false); });
+
+  // ---- in-app repo loading: panel, drag-drop, recent list --------------
+  document.getElementById('open-repo').addEventListener('click', openRepoPanel);
+  document.getElementById('repo-cancel').addEventListener('click', closeRepoPanel);
+  repoLoadBtn.addEventListener('click', function () {
+    var p = repoPathEl.value.trim();
+    if (!p) { repoStatusEl.textContent = '请输入仓库路径'; return; }
+    loadRepo(p);
+  });
+  repoPathEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      var p = repoPathEl.value.trim();
+      if (!p) { repoStatusEl.textContent = '请输入仓库路径'; return; }
+      loadRepo(p);
+    }
+  });
+  // The overlay must not start a window drag (same easy_drag handling as
+  // the module picker): pressing anywhere inside it never reaches window.
+  repoOverlayEl.addEventListener('mousedown', function (e) {
+    e.stopPropagation();
+  });
+  // Drag a repo folder onto the window to load it directly.
+  window.addEventListener('dragover', function (e) { e.preventDefault(); });
+  window.addEventListener('drop', function (e) {
+    e.preventDefault();
+    var dt = e.dataTransfer;
+    if (!dt || !dt.items || !dt.items.length) { return; }
+    var item = dt.items[0];
+    var path = null;
+    try {
+      var entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
+      if (entry && entry.fullPath) { path = entry.fullPath.replace(/^\//, ''); }
+    } catch (err) { /* fall through to File */ }
+    if (!path && item.getAsFile) {
+      var f = item.getAsFile();
+      if (f) { path = (f.path || f.webkitRelativePath || '').replace(/^\//, ''); }
+    }
+    if (!path) {
+      openRepoPanel();
+      repoStatusEl.textContent = '无法从拖放读取路径，请手动粘贴仓库路径';
+      return;
+    }
+    openRepoPanel();
+    repoPathEl.value = path;
+    loadRepo(path);
+  });
   window.__codemap_poll = POLL_MS;   // smoke-test probe
   window.__codemap_go = openMicro;   // smoke-test probe: jump to a module
 
@@ -716,7 +915,12 @@
   }
   document.getElementById('close').addEventListener('click', closeWindow);
   window.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') { closeWindow(); return; }
+    if (e.key === 'Escape') {
+      // Close the repo panel first; only quit the app when nothing else
+      // is open (the panel's own ✕ / Esc affordance comes first).
+      if (repoOverlayEl && !repoOverlayEl.hidden) { closeRepoPanel(); return; }
+      closeWindow(); return;
+    }
     if (e.ctrlKey && (e.key === '=' || e.key === '+')) {
       e.preventDefault();
       var vp = state.activeVp || vpMain;

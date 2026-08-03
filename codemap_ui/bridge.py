@@ -30,7 +30,7 @@ EDGE_COLS = (
     "file_path", "line", "confidence", "confidence_tier",
 )
 
-# ---- business-module split (same rules as make_arch_demo3.py) ----------
+# ---- business-module split (default repo: same rules as make_arch_demo3.py)
 MODULES = [
     ("AUTH", "认证模块", "🔐"),
     ("NEWS", "新闻模块", "📰"),
@@ -48,23 +48,15 @@ CODEMAP_ROOT = str(Path(__file__).resolve().parent.parent)
 # Edge kinds that count as a dependency for the macro diagram.
 DEP_KINDS = ("CALLS", "REFERENCES", "IMPORTS_FROM")
 
-
-def module_of(path: str) -> str:
-    """Map a file path to a business module (mirrors make_arch_demo3.module_of)."""
-    p = (path or "").replace("\\", "/")
-    for key, mod in (("/users", "AUTH"), ("/news", "NEWS"),
-                     ("/favorite", "FAV"), ("/history", "HIST")):
-        if key in p:
-            return mod
-    return "SUPPORT"
-
-
-def rel_path(path: str) -> str:
-    """Short display path relative to the repo root (e.g. ``models/users.py``)."""
-    p = (path or "").replace("\\", "/")
-    if REPO_ROOT in p:
-        return p.split(REPO_ROOT, 1)[1]
-    return p.rsplit("/", 1)[-1]
+# Icon palette for modules auto-derived from a loaded repo's top-level
+# directories (the default repo keeps its fixed MODULES instead).
+ICON_POOL = ("📦", "🧩", "⚙️", "🔧", "📁", "🗂️", "📚", "🧰", "⚡", "🛠️")
+# Top-level directories that never become a module.
+HIDDEN_DIRS = {
+    ".git", ".venv", "venv", "env", "node_modules", "__pycache__",
+    "dist", "build", ".idea", ".vscode", ".code-review-graph", ".tox",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", "htmlcov", ".eggs",
+}
 
 
 class Bridge:
@@ -80,10 +72,209 @@ class Bridge:
         self._last_snapshot: dict | None = None
         self._change: dict | None = None
         self._refreshing = False
+        # Loaded-repo state. Defaults to the legacy hardcoded repo so the
+        # app behaves exactly as before; `load_repo()` swaps these in.
+        self.repo_root = REPO_ROOT
+        self.db_path = get_db_path()
+        self.modules: list[tuple[str, str, str]] = list(MODULES)
+        self._legacy = True          # default repo: substring module rules
+        self._comp_map: dict[str, str] | None = None  # derived: dir -> key
+        self._module_keys = [k for k, _, _ in self.modules]
+        self._mod_name = {k: n for k, n, _ in self.modules}
+        self._mod_icon = {k: i for k, _, i in self.modules}
+
+    # ---- repo-aware path/module helpers ---------------------------------
+
+    def _rel_of(self, path: str) -> str:
+        """Path relative to the loaded repo root (case-insensitive match)."""
+        p = (path or "").replace("\\", "/")
+        root = self.repo_root.replace("\\", "/").rstrip("/") + "/"
+        if p.lower().startswith(root.lower()):
+            return p[len(root):]
+        return p.rsplit("/", 1)[-1]
+
+    def rel_path(self, path: str) -> str:
+        """Short display path relative to the repo root (e.g. ``models/users.py``)."""
+        return self._rel_of(path)
+
+    def module_of(self, path: str) -> str:
+        """Map a file path to a business module.
+
+        Legacy (default repo) keeps the make_arch_demo3 substring rules
+        byte-for-byte. Derived repos look up the path's first-level directory
+        (case-insensitive) in ``_comp_map``; root-level files belong to the
+        ``ROOT`` module.
+        """
+        p = (path or "").replace("\\", "/")
+        if self._legacy:
+            for key, mod in (("/users", "AUTH"), ("/news", "NEWS"),
+                             ("/favorite", "FAV"), ("/history", "HIST")):
+                if key in p:
+                    return mod
+            return "SUPPORT"
+        rel = self._rel_of(p)
+        if "/" in rel:
+            return self._comp_map.get(rel.split("/", 1)[0].lower(), "ROOT")
+        return "ROOT"
+
+    def load_repo(self, path: str) -> dict:
+        """Point the app at a different repo without editing any code.
+
+        ``path`` is a filesystem path to a git repo. If it has no
+        ``.code-review-graph/graph.db`` yet, CRG's ``build`` subcommand runs
+        first (non-git directories fail there and the error is returned).
+        The module list is derived from the File nodes' top-level directories
+        — except when loading the default repo, which restores the fixed
+        business modules. Returns the fresh macro data so the page can
+        rebuild itself in one round-trip.
+        """
+        if self._refreshing:
+            return {"status": "busy", "message": "load in progress"}
+        raw = (path or "").strip().strip('"').strip("'").strip()
+        if not raw:
+            return {"error": "路径为空"}
+        repo = str(Path(raw).expanduser()).replace("\\", "/").rstrip("/") + "/"
+        if not os.path.isdir(repo):
+            return {"error": f"目录不存在: {repo}"}
+
+        db = repo + ".code-review-graph/graph.db"
+        if not os.path.isfile(db):
+            self._refreshing = True
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "-m", "code_review_graph", "build",
+                     "--repo", repo, "-q"],
+                    cwd=CODEMAP_ROOT, capture_output=True, text=True,
+                    timeout=600,
+                )
+            except FileNotFoundError:
+                return {"error": "code_review_graph 包未找到（请确认在 venv 内启动）"}
+            except subprocess.TimeoutExpired:
+                return {"error": "CRG build 超时（600s）"}
+            finally:
+                self._refreshing = False
+            if proc.returncode != 0:
+                tail = (proc.stderr or proc.stdout or "").strip()[-400:]
+                logger.error("CRG build failed (rc=%s): %s",
+                             proc.returncode, tail)
+                return {"error": "CRG build 失败: " + (tail or "见日志")}
+
+        self.repo_root = repo
+        self.db_path = db
+        if repo.lower() == REPO_ROOT.lower():
+            self.modules = list(MODULES)
+            self._legacy = True
+            self._comp_map = None
+        else:
+            self.modules, self._comp_map = self._derive_modules(db, repo)
+            self._legacy = False
+        self._module_keys = [k for k, _, _ in self.modules]
+        self._mod_name = {k: n for k, n, _ in self.modules}
+        self._mod_icon = {k: i for k, _, i in self.modules}
+        self._last_snapshot = None
+        self._change = None
+        self._inherit_state(self._micro_bridge)
+        return {
+            "status": "ok",
+            "repo": self.repo_root,
+            "db": self.db_path,
+            "modules": [{"key": k, "name": n, "icon": i}
+                        for k, n, i in self.modules],
+            "mtime": self._db_mtime(),
+            "macro": self.get_macro(),
+        }
+
+    def _derive_modules(self, db: str, repo: str
+                        ) -> tuple[list[tuple[str, str, str]], dict[str, str]]:
+        """Derive modules from the File nodes' top-level directories.
+
+        Returns (modules, comp_map): modules is a list of ``(key, name,
+        icon)`` tuples (most files first, ``ROOT`` for repo-root files) and
+        comp_map maps a lowercased top-level directory to its module key.
+        """
+        root = repo.rstrip("/") + "/"
+        top_dirs: dict[str, tuple[str, int]] = {}
+        root_files = 0
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                rows = con.execute(
+                    "SELECT file_path FROM nodes WHERE kind = 'File'"
+                ).fetchall()
+            finally:
+                con.close()
+        except sqlite3.Error as exc:
+            logger.error("load_repo: cannot read %s: %s", db, exc)
+            return list(MODULES), {}
+        for (fp,) in rows:
+            p = (fp or "").replace("\\", "/")
+            rel = p[len(root):] if p.lower().startswith(root.lower()) else p
+            if "/" in rel:
+                top = rel.split("/", 1)[0]
+                low = top.lower()
+                if low and low not in HIDDEN_DIRS:
+                    name, n = top_dirs.get(low, (top, 0))
+                    top_dirs[low] = (name, n + 1)
+            elif rel:
+                root_files += 1
+
+        modules: list[tuple[str, str, str]] = []
+        comp_map: dict[str, str] = {}
+        used: set[str] = set()
+
+        def make_key(name: str) -> str:
+            key = "".join(c if c.isalnum() or c == "_" else "_"
+                          for c in name.upper())
+            if key and key[0].isdigit():
+                key = "M" + key
+            if not key:
+                key = "M"
+            base, i = key, 2
+            while key in used:
+                key = f"{base}_{i}"
+                i += 1
+            used.add(key)
+            return key
+
+        if root_files:
+            modules.append(("ROOT", "根目录", "📁"))
+            used.add("ROOT")
+        ranked = sorted(top_dirs.items(), key=lambda kv: (-kv[1][1], kv[0]))
+        for i, (low, (name, _n)) in enumerate(ranked[:12]):
+            modules.append((make_key(name), name, ICON_POOL[i % len(ICON_POOL)]))
+            comp_map[low] = modules[-1][0]
+        if not modules:
+            modules.append(("ROOT", "根目录", "📁"))
+        # The ROOT bucket (files directly under the repo root) reads best at
+        # the end, after the named directories.
+        if len(modules) > 1 and modules[0][0] == "ROOT":
+            modules.append(modules.pop(0))
+        return modules, comp_map
+
+    def _inherit_state(self, other: "Bridge | None") -> None:
+        """Copy the loaded-repo state onto the detached micro bridge."""
+        if other is None:
+            return
+        other.repo_root = self.repo_root
+        other.db_path = self.db_path
+        other.modules = list(self.modules)
+        other._legacy = self._legacy
+        other._comp_map = dict(self._comp_map) if self._comp_map else None
+        other._module_keys = list(self._module_keys)
+        other._mod_name = dict(self._mod_name)
+        other._mod_icon = dict(self._mod_icon)
+        other._last_snapshot = None
+        other._change = self._change
+        # If the micro window's module vanished in the new repo, fall back
+        # to the first module so pop_micro keeps working.
+        if (getattr(other, "_module_key", None) is not None
+                and other._module_key not in other._module_keys):
+            other._module_key = (other._module_keys[0]
+                                 if other._module_keys else None)
 
     def get_graph(self) -> dict:
         """Read nodes/edges from graph.db and return them as JSON data."""
-        db_path = get_db_path()
+        db_path = self.db_path
         nodes: list[dict] = []
         edges: list[dict] = []
         try:
@@ -129,7 +320,7 @@ class Bridge:
             try:
                 proc = subprocess.run(
                     [sys.executable, "-m", "code_review_graph", "update",
-                     "--repo", REPO_ROOT, "-q"],
+                     "--repo", self.repo_root, "-q"],
                     cwd=CODEMAP_ROOT, capture_output=True, text=True,
                     timeout=300,
                 )
@@ -172,23 +363,24 @@ class Bridge:
             self._refreshing = False
 
     def stat(self) -> dict:
-        """graph.db mtime + path, for the JS polling loop (every 2 s)."""
-        db_path = get_db_path()
+        """graph.db mtime + paths, for the JS polling loop (every 2 s)."""
         try:
-            return {"mtime": os.path.getmtime(db_path),
-                    "db": db_path, "exists": True}
+            return {"mtime": os.path.getmtime(self.db_path),
+                    "db": self.db_path, "repo": self.repo_root,
+                    "exists": True}
         except OSError:
-            return {"mtime": None, "db": db_path, "exists": False}
+            return {"mtime": None, "db": self.db_path,
+                    "repo": self.repo_root, "exists": False}
 
     def _db_mtime(self) -> float | None:
         try:
-            return os.path.getmtime(get_db_path())
+            return os.path.getmtime(self.db_path)
         except OSError:
             return None
 
     def _snapshot_nodes(self) -> dict:
         """Read the nodes table as {qualified_name: info} (read-only)."""
-        db_path = get_db_path()
+        db_path = self.db_path
         con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         try:
             rows = con.execute(
@@ -199,8 +391,7 @@ class Bridge:
         return {r[0]: {"kind": r[1], "parent": r[2], "file": r[3],
                        "hash": r[4]} for r in rows}
 
-    @staticmethod
-    def _diff_snapshots(before: dict, after: dict) -> dict:
+    def _diff_snapshots(self, before: dict, after: dict) -> dict:
         """SQL two-table comparison of two nodes snapshots.
 
         Returns both a qualified_name-keyed structure (for the micro/macro
@@ -216,7 +407,7 @@ class Bridge:
                 "name": qn.split("::")[-1],
                 "kind": rec["kind"],
                 "parent": rec["parent"],
-                "file": rel_path(rec["file"]),
+                "file": self.rel_path(rec["file"]),
             }
 
         return {
@@ -258,21 +449,22 @@ class Bridge:
         removed = ch.get("removed", {})
         added_funcs = []
         for qn, info in sorted(added.items()):
-            if info["kind"] != "Function" or module_of(info["file"]) != key:
+            if info["kind"] != "Function" or self.module_of(info["file"]) != key:
                 continue
             short = qn.split("::")[-1]
             if info["parent"]:
                 short = info["parent"].split("::")[-1] + "." + short
-            added_funcs.append({"name": short, "file": rel_path(info["file"])})
+            added_funcs.append({"name": short,
+                                "file": self.rel_path(info["file"])})
         removed_ghosts = []
         for qn, info in sorted(removed.items()):
-            if module_of(info["file"]) != key:
+            if self.module_of(info["file"]) != key:
                 continue
             short = qn.split("::")[-1]
             if info["kind"] == "Function" and info["parent"]:
                 short = info["parent"].split("::")[-1] + "." + short
             removed_ghosts.append({"name": short, "kind": info["kind"],
-                                   "file": rel_path(info["file"])})
+                                   "file": self.rel_path(info["file"])})
         return {"added_funcs": added_funcs, "removed": removed_ghosts}
 
     def _change_counts(self) -> dict:
@@ -280,7 +472,7 @@ class Bridge:
         counts: dict[str, dict] = {}
         for kind in ("added", "modified", "removed"):
             for _qn, info in (self._change or {}).get(kind, {}).items():
-                key = module_of(info["file"])
+                key = self.module_of(info["file"])
                 slot = counts.setdefault(
                     key, {"added": 0, "modified": 0, "removed": 0})
                 slot[kind] += 1
@@ -303,7 +495,7 @@ class Bridge:
         """
         if self._micro_window is None or self._micro_bridge is None:
             return {"error": "micro window not configured"}
-        if module_key not in MODULE_KEYS:
+        if module_key not in self._module_keys:
             return {"error": f"unknown module: {module_key}"}
         try:
             self._micro_bridge._module_key = module_key
@@ -399,7 +591,7 @@ class Bridge:
 
     def _read_graph(self) -> tuple[list[dict], list[dict]]:
         """Read all nodes/edges (shared by the macro/micro aggregations)."""
-        db_path = get_db_path()
+        db_path = self.db_path
         con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         try:
             con.row_factory = sqlite3.Row
@@ -456,14 +648,14 @@ class Bridge:
 
         classes_by_mod: dict[str, list[tuple[str, str]]] = defaultdict(list)
         for q, fp in classes:
-            classes_by_mod[module_of(fp)].append((q, fp))
+            classes_by_mod[self.module_of(fp)].append((q, fp))
 
         files_by_mod: dict[str, set[str]] = defaultdict(set)
         for n in nodes:
             if n["kind"] == "File":
-                files_by_mod[module_of(n["file_path"])].add(n["file_path"])
+                files_by_mod[self.module_of(n["file_path"])].add(n["file_path"])
         for q, fp in classes:
-            files_by_mod[module_of(fp)].add(fp)
+            files_by_mod[self.module_of(fp)].add(fp)
 
         # INHERITS resolved within the same module (short-name targets).
         inherits: list[tuple[str, str]] = []
@@ -474,7 +666,7 @@ class Bridge:
             if src not in cls_set:
                 continue
             tgt = resolve_short(fp_of[src], e["target_qualified"])
-            if tgt and module_of(fp_of[tgt]) == module_of(fp_of[src]):
+            if tgt and self.module_of(fp_of[tgt]) == self.module_of(fp_of[src]):
                 inherits.append((src, tgt))
 
         # REFERENCES/CALLS/IMPORTS rolled up to containers; split into
@@ -489,7 +681,7 @@ class Bridge:
             t_kind, t_cont, t_fp = container_of(e["target_qualified"])
             dep_weight[s_fp] += 1
             dep_weight[t_fp] += 1
-            sm, tm = module_of(s_fp), module_of(t_fp)
+            sm, tm = self.module_of(s_fp), self.module_of(t_fp)
             if sm != tm:
                 cross_mod[(sm, tm)] += 1
             elif t_kind == "class":
@@ -516,7 +708,7 @@ class Bridge:
 
         change_counts = self._change_counts()
         modules = []
-        for key, name, icon in MODULES:
+        for key, name, icon in self.modules:
             cls_list = agg["classes_by_mod"].get(key, [])
             files = agg["files_by_mod"].get(key, set())
             # Key files: most dependency traffic first, then most classes.
@@ -531,7 +723,7 @@ class Bridge:
                 "key": key, "name": name, "icon": icon,
                 "class_count": len(cls_list),
                 "file_count": len(files),
-                "files": [rel_path(fp) for fp in ranked[:cap]],
+                "files": [self.rel_path(fp) for fp in ranked[:cap]],
                 "more_files": max(0, len(ranked) - cap),
                 "change": change_counts.get(
                     key, {"added": 0, "modified": 0, "removed": 0}),
@@ -559,7 +751,7 @@ class Bridge:
             logger.error("get_micro failed: %s", exc)
             return {"error": str(exc)}
 
-        if module_key not in MODULE_KEYS:
+        if module_key not in self._module_keys:
             return {"error": f"unknown module: {module_key}"}
 
         cls_list = sorted(agg["classes_by_mod"].get(module_key, []))
@@ -570,7 +762,7 @@ class Bridge:
         classes = [
             {
                 "name": qn.split("::")[-1],
-                "file": rel_path(fp),
+                "file": self.rel_path(fp),
                 "is_base": qn in base_set,
                 "methods": sorted(agg["methods_of"].get(qn, [])),
                 "status": ("added" if qn in added_qns
@@ -591,18 +783,19 @@ class Bridge:
                              "to_class": tgt.split("::")[-1], "count": n})
             else:
                 files.add(src)
-                refs.append({"from_file": rel_path(src),
+                refs.append({"from_file": self.rel_path(src),
                              "to_class": tgt.split("::")[-1], "count": n})
 
         inherits = [{"from": s.split("::")[-1], "to": t.split("::")[-1]}
                     for s, t in agg["inherits"] if s in cls_qns]
 
         return {
-            "module": {"key": module_key, "name": MOD_NAME[module_key],
-                       "icon": MOD_ICON[module_key]},
+            "module": {"key": module_key,
+                       "name": self._mod_name[module_key],
+                       "icon": self._mod_icon[module_key]},
             "classes": classes,
             "files": [
-                {"rel": rel_path(fp),
+                {"rel": self.rel_path(fp),
                  "status": ("added" if fp in added_qns
                             else "modified" if fp in modified_qns else None)}
                 for fp in sorted(files)
@@ -633,7 +826,7 @@ class MicroBridge(Bridge):
 
     def current(self) -> dict:
         return {"module": self._module_key,
-                "name": MOD_NAME.get(self._module_key, "")}
+                "name": self._mod_name.get(self._module_key, "")}
 
     def close(self) -> dict:
         if self._window is not None:

@@ -44,6 +44,9 @@
   #graph .mermaid svg { display: block; }
   #graph .edgeLabel { background: #ffffff; color: var(--muted); font-size: 11px; }
   #graph .edge-pattern-dotted { stroke-dasharray: 6 4 !important; }
+  /* Normalise arrowheads (same as the main window): use the injected
+     codemap-arrow marker so arrows sit cleanly on the line end. */
+  #graph path.flowchart-link { marker-end: url(#codemap-arrow) !important; }
   /* Incremental-change highlights (same rules as the main window). */
   @keyframes codemap-blink { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
   #graph g.node.modifiedClass { animation: codemap-blink .9s ease-in-out infinite; }
