@@ -18,7 +18,7 @@
 
   var state = { zoom: 1, fitW: 0, fitH: 0, data: null };
   var renderSeq = 0;
-  var MIN_ZOOM = 0.5, MAX_ZOOM = 8, ZOOM_STEP = 1.2, FIT_PAD = 32;
+  var MIN_ZOOM = 0.5, MAX_ZOOM = 20, ZOOM_STEP = 1.2, FIT_PAD = 32;
 
   var PALETTE = {
     classFill: '#8E5FD7',
@@ -290,6 +290,9 @@
     if (api()) { api().close(); }  // MicroBridge.close(): hide the window
   }
   document.getElementById('close').addEventListener('click', closeWindow);
+  document.getElementById('minimize').addEventListener('click', function () {
+    if (api()) { api().minimize(); }
+  });
   window.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') { closeWindow(); return; }
     if (e.ctrlKey && (e.key === '=' || e.key === '+')) {

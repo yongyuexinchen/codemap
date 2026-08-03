@@ -484,6 +484,12 @@ class Bridge:
             self._window.destroy()
         return {"status": "ok"}
 
+    def minimize(self) -> dict:
+        """Minimize the window to the taskbar (called from the page's ─ button)."""
+        if self._window is not None:
+            self._window.minimize()
+        return {"status": "ok"}
+
     def pop_micro(self, module_key: str) -> dict:
         """Pop the class diagram for ``module_key`` out into its own window.
 

@@ -21,7 +21,8 @@
     flex-direction: column; border: 12px solid var(--frame); }
 
   header { display: flex; align-items: center; gap: 12px;
-    padding: 10px 14px; background: var(--panel);
+    position: relative; padding: 10px 84px 10px 14px;
+    background: var(--panel);
     border-bottom: 1px solid var(--line); }
   header h1 { margin: 0; font-size: 14px; font-weight: 600;
     letter-spacing: .5px; }
@@ -32,9 +33,15 @@
     border: 1px solid #d8dce2; border-radius: 4px;
     padding: 4px 12px; cursor: pointer; }
   button:hover { background: #e2e6eb; }
-  #close { margin-left: 8px; padding: 2px 10px; font-size: 14px;
-    line-height: 1.4; background: transparent; border-color: transparent;
+  /* Window buttons (─ minimize, ✕ close) pinned to the top-right corner
+     outside the flex flow, so they stay visible at any window width. */
+  #minimize, #close { position: absolute; top: 50%; transform: translateY(-50%);
+    padding: 2px 10px; font-size: 14px; line-height: 1.4;
+    background: transparent; border-color: transparent;
     color: var(--muted); }
+  #minimize { right: 48px; }
+  #minimize:hover { color: #1a1a1a; background: rgba(26, 26, 26, .07); }
+  #close { right: 14px; }
   #close:hover { color: #c0392b; background: rgba(192, 57, 43, .08); }
 
   #graph { display: flex; width: 100%; flex: 1; min-height: 0;
@@ -97,6 +104,7 @@
         <button id="zoom-in" title="放大 (滚轮向上)">＋</button>
       </span>
       <div class="stats"><span id="view-count">–</span></div>
+      <button id="minimize" title="最小化 (隐藏窗口)">─</button>
       <button id="close" title="收起 (Esc)">✕</button>
     </header>
     <div id="graph"></div>

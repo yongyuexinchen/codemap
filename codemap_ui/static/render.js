@@ -32,7 +32,7 @@
   var state = { view: 'macro', module: 'AUTH', macroData: null,
     microData: null, activeVp: null, lastChange: null };
   var renderSeq = 0;
-  var MIN_ZOOM = 0.5, MAX_ZOOM = 8, ZOOM_STEP = 1.2, FIT_PAD = 32;
+  var MIN_ZOOM = 0.5, MAX_ZOOM = 20, ZOOM_STEP = 1.2, FIT_PAD = 32;
 
   // ---- in-app project loading ("📂 打开项目") ---------------------------
   // Lets the user point the app at any repo path from inside the window:
@@ -914,6 +914,9 @@
     if (api()) { api().close(); }
   }
   document.getElementById('close').addEventListener('click', closeWindow);
+  document.getElementById('minimize').addEventListener('click', function () {
+    if (api()) { api().minimize(); }
+  });
   window.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
       // Close the repo panel first; only quit the app when nothing else
