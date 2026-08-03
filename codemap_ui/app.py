@@ -170,8 +170,9 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
         pass
     # Isolate the LLM: even if the user configured an API key in the app,
     # the smoke run must never hit the network (the key is restored at the
-    # end together with the state file).
-    semantic.configure(api_key=None)
+    # end together with the state file). An empty string — NOT None, which
+    # means "keep the current value" — forcibly disables the key.
+    semantic.configure(api_key="")
     result: dict = {}
 
     def on_loaded(*_args) -> None:  # noqa: ANN002 - event args vary by pywebview
@@ -767,6 +768,8 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
                 # DEEPSEEK_API_KEY; deliberately not mocked here.)
                 sem = bridge.get_semantics()
                 assert sem is None, sem
+                # request_semantics() with no key is a no-op (no network).
+                assert bridge.request_semantics()["status"] == "no_key"
                 result["semantics"] = repr(sem)
                 # LLM settings dialog round-trip: set -> persisted -> read
                 # back -> clear (all in-memory; no network involved).

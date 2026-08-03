@@ -159,6 +159,7 @@
       setStatus('已加载项目：' + r.repo);
       setViewButtons();
       renderView();
+      requestSemantics();  // LLM Chinese names (silently skipped without a key)
     }).catch(function (err) {
       repoLoading = false;
       repoLoadBtn.disabled = false;
@@ -760,6 +761,85 @@
     else { openMicro(state.module); }
   }
 
+  // ---- LLM semantics: Chinese module names (⚙️ API key required) --------
+  // After a repo loads (or an API key is saved), request_semantics() starts
+  // an LLM call on a Python background thread; we poll get_semantics() and,
+  // once it turns non-null, fold the Chinese names + architecture pattern
+  // into the module registry and re-render. No key / LLM failure keeps the
+  // original module names, exactly as before.
+  var semPollTimer = null;
+
+  function stopSemPoll() {
+    if (semPollTimer) { clearInterval(semPollTimer); semPollTimer = null; }
+  }
+
+  function applySemantics(sem) {
+    if (!sem || !sem.modules) { return false; }
+    var changed = false;
+    MODULES.forEach(function (m) {
+      var info = sem.modules[m.key];
+      if (info && info.name && info.name !== m.name) {
+        m.name = info.name;
+        m.desc = info.desc || '';
+        changed = true;
+      }
+    });
+    if (state.macroData && state.macroData.modules) {
+      state.macroData.modules.forEach(function (mm) {
+        var info = sem.modules[mm.key];
+        if (info && info.name && info.name !== mm.name) {
+          mm.name = info.name;
+          changed = true;
+        }
+      });
+    }
+    if (state.microData && state.microData.module) {
+      var mi = sem.modules[state.microData.module.key];
+      if (mi && mi.name) { state.microData.module.name = mi.name; changed = true; }
+    }
+    if (changed) {
+      setPickerValue(state.module);
+      renderView();          // redraw with the Chinese cluster labels
+    }
+    var arch = sem.arch_pattern;
+    setStatus((arch ? '架构模式：' + arch + ' · ' : '') +
+              '✅ LLM 语义已生效：中文模块名已更新');
+    return true;
+  }
+
+  function requestSemantics() {
+    if (!api()) { return; }
+    api().request_semantics().then(function (r) {
+      if (!r) { return; }
+      if (r.status === 'ready') { applySemantics(r.result); }
+      else if (r.status === 'started') {
+        setStatus('正在调用 LLM 生成中文模块语义（首次约 10–60 秒）…');
+        startSemPoll();
+      }
+      // 'no_key' -> no API key configured: keep original module names.
+    }).catch(function () { /* bridge hiccup: fall back to original names */ });
+  }
+
+  function startSemPoll() {
+    stopSemPoll();
+    var tries = 0;
+    semPollTimer = setInterval(function () {
+      tries++;
+      api().get_semantics().then(function (sem) {
+        if (sem) {
+          stopSemPoll();
+          applySemantics(sem);
+        } else if (tries >= 45) {   // ~90s: LLM timeout + margin
+          stopSemPoll();
+          setStatus('LLM 未返回结果（请检查 API Key / 网络），已保留原始模块名');
+        }
+      }).catch(function () {
+        stopSemPoll();
+        setStatus('LLM 语义生成失败，已保留原始模块名');
+      });
+    }, 2000);
+  }
+
   // ---- boot --------------------------------------------------------------
   // First run (no saved repo): render a blank "no project" state instead of
   // auto-loading the default repo. If the previous session ended with a
@@ -909,10 +989,22 @@
     llmSaveBtn.disabled = true;
     api().set_llm_config(llmKeyEl.value, llmBaseEl.value, llmModelEl.value)
       .then(function (r) {
-        llmStatusEl.textContent = (r && r.status === 'ok')
-          ? (r.has_key ? '已保存并生效 ✅' : '已保存（未启用 LLM 语义）')
-          : '保存失败：' + JSON.stringify(r);
-        llmSaveBtn.disabled = false;
+        if (r && r.status === 'ok') {
+          if (r.has_key) {
+            if (state.macroData) {
+              llmStatusEl.textContent = '已保存 ✅ 正在生成中文模块语义…';
+              requestSemantics();  // immediate reaction: names appear shortly
+            } else {
+              llmStatusEl.textContent = '已保存 ✅ 打开项目后自动生效';
+            }
+          } else {
+            llmStatusEl.textContent = '已保存（未启用 LLM 语义）';
+          }
+          llmSaveBtn.disabled = false;
+        } else {
+          llmStatusEl.textContent = '保存失败：' + JSON.stringify(r);
+          llmSaveBtn.disabled = false;
+        }
       }).catch(function (e) {
         llmStatusEl.textContent = '保存失败：' + e;
         llmSaveBtn.disabled = false;

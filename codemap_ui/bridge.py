@@ -12,6 +12,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,8 @@ class Bridge:
         # LLM semantic layer: session cache of per-module Chinese names
         # (None until the first successful generate; see get_semantics).
         self._semantics: dict | None = None
+        self._sem_token = 0          # invalidates in-flight generations
+        self._arch_pattern: str | None = None  # e.g. "MVC / 微服务分层"
         # Loaded-repo state. Defaults to the legacy hardcoded repo so the
         # app behaves exactly as before; `load_repo()` swaps these in.
         self.repo_root = REPO_ROOT
@@ -212,6 +215,8 @@ class Bridge:
         self._last_snapshot = None
         self._change = None
         self._semantics = None  # LLM semantics belong to the loaded repo
+        self._arch_pattern = None
+        self._sem_token += 1    # drop any in-flight generation for the old repo
         self._inherit_state(self._micro_bridge)
         self._save_state(last_repo=self.repo_root)
         return {
@@ -343,6 +348,8 @@ class Bridge:
                          llm_model=model)
         self._apply_llm_config()
         self._semantics = None  # re-generate with the new settings
+        self._arch_pattern = None
+        self._sem_token += 1    # drop any in-flight generation with the old key
         return {"status": "ok", "has_key": bool(api_key)}
 
     def get_llm_config(self) -> dict:
@@ -355,25 +362,69 @@ class Bridge:
             "env_key": bool(LLM_API_KEY),
         }
 
-    def get_semantics(self) -> dict | None:
-        """LLM-derived Chinese business names + one-line duties per module.
+    def request_semantics(self) -> dict:
+        """Start LLM semantics generation on a background thread.
 
-        Cached for the session in ``self._semantics`` and persisted in
-        graph.db's ``semantics`` table (see ``semantic.generate``). Returns
-        None whenever the LLM is unavailable — no API key, network failure,
-        bad reply — so the front end keeps its existing module names and
-        nothing crashes.
+        Non-blocking: the LLM call can take 10-60s, so it never runs on the
+        js_api thread (which would stall every other bridge call). The front
+        end polls ``get_semantics()`` until it turns non-None. Calling again
+        while a generation is in flight starts a fresh one; the stale worker
+        discards its result (``_sem_token``).
+
+        Returns:
+          ``{"status": "ready", "result": {...}}`` - already generated this
+              session (front end can apply it immediately);
+          ``{"status": "started"}`` - background generation is running;
+          ``{"status": "no_key"}``  - no API key; original names are kept.
         """
         if self._semantics is not None:
-            return self._semantics
+            return {"status": "ready", "result": self._semantics}
+        if not semantic.llm_config().get("api_key"):
+            return {"status": "no_key"}
+        self._sem_token += 1
+        threading.Thread(target=self._semantics_worker,
+                         args=(self._sem_token,), daemon=True).start()
+        return {"status": "started"}
+
+    def _semantics_worker(self, token: int) -> None:
+        """Run semantic.generate() off the js_api thread and fold the result
+        into the live module registry. Results are dropped if a newer
+        generation was requested or the repo changed mid-flight (load_repo
+        bumps ``_sem_token`` and swaps ``db_path``).
+        """
+        db_path, modules = self.db_path, self.modules
         try:
-            result = semantic.generate(self.db_path, self.modules)
+            result = semantic.generate(db_path, modules)
         except Exception:  # defensive: semantics must never break the UI
-            logger.exception("get_semantics failed")
-            return None
+            logger.exception("semantics generation failed")
+            result = None
+        if token != self._sem_token or self.db_path != db_path:
+            return  # stale generation: discard without touching state
         if result is not None:
             self._semantics = result
-        return result
+            self._merge_semantics(result)
+
+    def _merge_semantics(self, result: dict) -> None:
+        """Fold LLM-derived Chinese names into the live module registry so
+        get_macro/get_micro/load_repo outputs use them automatically,
+        without any front-end schema change."""
+        mods = result.get("modules") or {}
+        for i, (key, name, icon) in enumerate(self.modules):
+            info = mods.get(key) or {}
+            if info.get("name"):
+                self.modules[i] = (key, info["name"], icon)
+                self._mod_name[key] = info["name"]
+        self._arch_pattern = result.get("arch_pattern")
+
+    def get_semantics(self) -> dict | None:
+        """Session-cached LLM semantics (start generation via
+        ``request_semantics``).
+
+        Returns None while generation is still running or when the LLM is
+        unavailable — no API key, network failure, bad reply — so the front
+        end keeps its existing module names and nothing crashes.
+        """
+        return self._semantics
 
     def get_graph(self) -> dict:
         """Read nodes/edges from graph.db and return them as JSON data."""
