@@ -752,6 +752,17 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
                      "macro_edges": len(lr["macro"]["edges"]),
                      "mtime": lr.get("mtime")}, ensure_ascii=False)
 
+                # ---- LLM semantic layer ---------------------------------
+                # Assertion 1: with no DEEPSEEK_API_KEY configured,
+                # get_semantics() returns None (front-end keeps the existing
+                # module names) and never raises.
+                # (Assertion 2 — a real LLM call returns a dict containing a
+                # "modules" key — is a manual check the user runs once they
+                # export DEEPSEEK_API_KEY; deliberately not mocked here.)
+                sem = bridge.get_semantics()
+                assert sem is None, sem
+                result["semantics"] = repr(sem)
+
                 # graph must be fully restored to the pre-edit baseline
                 final_nodes = bridge._snapshot_nodes()
                 restored_hash = next(
@@ -847,6 +858,7 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
     print("SMOKE hl_macro:", result.get("hl_macro"))
     print("SMOKE macro_change:", result.get("macro_change"))
     print("SMOKE load_repo_roundtrip:", result.get("load_repo_roundtrip"))
+    print("SMOKE semantics:", result.get("semantics"))
     print("SMOKE macro_status:", result.get("macro_status"))
     print("SMOKE final_nodes:", result.get("final_nodes"))
     print("SMOKE git_clean:", result.get("git_clean"))

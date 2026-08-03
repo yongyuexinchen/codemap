@@ -16,6 +16,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from . import semantic
 from .config import MIN_HEIGHT, MIN_WIDTH, get_db_path
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,9 @@ class Bridge:
         self._last_snapshot: dict | None = None
         self._change: dict | None = None
         self._refreshing = False
+        # LLM semantic layer: session cache of per-module Chinese names
+        # (None until the first successful generate; see get_semantics).
+        self._semantics: dict | None = None
         # Loaded-repo state. Defaults to the legacy hardcoded repo so the
         # app behaves exactly as before; `load_repo()` swaps these in.
         self.repo_root = REPO_ROOT
@@ -204,6 +208,7 @@ class Bridge:
         self._mod_icon = {k: i for k, _, i in self.modules}
         self._last_snapshot = None
         self._change = None
+        self._semantics = None  # LLM semantics belong to the loaded repo
         self._inherit_state(self._micro_bridge)
         self._save_state(last_repo=self.repo_root)
         return {
@@ -303,6 +308,28 @@ class Bridge:
                 and other._module_key not in other._module_keys):
             other._module_key = (other._module_keys[0]
                                  if other._module_keys else None)
+
+    # ---- LLM semantic layer -------------------------------------------
+
+    def get_semantics(self) -> dict | None:
+        """LLM-derived Chinese business names + one-line duties per module.
+
+        Cached for the session in ``self._semantics`` and persisted in
+        graph.db's ``semantics`` table (see ``semantic.generate``). Returns
+        None whenever the LLM is unavailable — no API key, network failure,
+        bad reply — so the front end keeps its existing module names and
+        nothing crashes.
+        """
+        if self._semantics is not None:
+            return self._semantics
+        try:
+            result = semantic.generate(self.db_path, self.modules)
+        except Exception:  # defensive: semantics must never break the UI
+            logger.exception("get_semantics failed")
+            return None
+        if result is not None:
+            self._semantics = result
+        return result
 
     def get_graph(self) -> dict:
         """Read nodes/edges from graph.db and return them as JSON data."""

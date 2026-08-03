@@ -23,3 +23,10 @@ DEFAULT_DB_PATH = r"E:\BaiduNetdiskDownload\code\toutiao_backend\.code-review-gr
 def get_db_path() -> str:
     """Return the graph.db path, honouring the CODEMAP_DB_PATH override."""
     return os.environ.get("CODEMAP_DB_PATH", DEFAULT_DB_PATH)
+
+
+# ---- LLM semantic layer configuration ----
+LLM_BASE_URL = "https://api.deepseek.com/v1"
+LLM_MODEL = "deepseek-v4-flash"
+LLM_API_KEY = os.environ.get("DEEPSEEK_API_KEY")  # 没配就是 None，调用方降级
+LLM_TIMEOUT = 60  # 秒
