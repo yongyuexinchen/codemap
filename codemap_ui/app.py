@@ -184,6 +184,7 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
                 "svg: !!document.querySelector('#graph svg'),"
                 "blank: !!document.querySelector('#graph .blank-state'),"
                 "searchDisabled: document.getElementById('module-search').disabled,"
+                "semDisabled: document.getElementById('sem-update').disabled,"
                 "status: document.getElementById('status').textContent})")
             blank1 = json.loads(result["blank"])
             assert blank1["blank"] and not blank1["svg"], (
@@ -192,6 +193,9 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
             assert blank1["searchDisabled"], (
                 "module picker must be disabled while no repo is open: %s"
                 % result["blank"])
+            assert blank1["semDisabled"], (
+                "semantics update button must be disabled while no repo is"
+                " open: %s" % result["blank"])
             # Load the default repo through the in-app flow (panel -> path
             # -> load), the same steps a first-time user takes.
             window.evaluate_js(
@@ -768,8 +772,11 @@ def _smoke_test(bridge: Bridge, window: webview.Window,
                 # DEEPSEEK_API_KEY; deliberately not mocked here.)
                 sem = bridge.get_semantics()
                 assert sem is None, sem
-                # request_semantics() with no key is a no-op (no network).
+                # request_semantics() with no key is a no-op (no network);
+                # the same holds for the force path (🔄 更新语义) — it must
+                # never start a worker without a key.
                 assert bridge.request_semantics()["status"] == "no_key"
+                assert bridge.request_semantics(force=True)["status"] == "no_key"
                 result["semantics"] = repr(sem)
                 # LLM settings dialog round-trip: set -> persisted -> read
                 # back -> clear (all in-memory; no network involved).

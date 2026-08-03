@@ -95,6 +95,10 @@ class Bridge:
         self._module_keys = [k for k, _, _ in self.modules]
         self._mod_name = {k: n for k, n, _ in self.modules}
         self._mod_icon = {k: i for k, _, i in self.modules}
+        # Pre-LLM module names, captured at load time and never overwritten
+        # by _merge_semantics — the UI keeps the original name visible next
+        # to the translated one ("新闻资讯（原 新闻模块）").
+        self._mod_orig_name = dict(self._mod_name)
         # Push persisted/in-app LLM settings onto the semantic layer.
         self._apply_llm_config()
 
@@ -212,6 +216,7 @@ class Bridge:
         self._module_keys = [k for k, _, _ in self.modules]
         self._mod_name = {k: n for k, n, _ in self.modules}
         self._mod_icon = {k: i for k, _, i in self.modules}
+        self._mod_orig_name = dict(self._mod_name)  # original names kept
         self._last_snapshot = None
         self._change = None
         self._semantics = None  # LLM semantics belong to the loaded repo
@@ -308,6 +313,9 @@ class Bridge:
         other._module_keys = list(self._module_keys)
         other._mod_name = dict(self._mod_name)
         other._mod_icon = dict(self._mod_icon)
+        other._mod_orig_name = dict(self._mod_orig_name)
+        other._semantics = self._semantics
+        other._arch_pattern = self._arch_pattern
         other._last_snapshot = None
         other._change = self._change
         # If the micro window's module vanished in the new repo, fall back
@@ -362,7 +370,7 @@ class Bridge:
             "env_key": bool(LLM_API_KEY),
         }
 
-    def request_semantics(self) -> dict:
+    def request_semantics(self, force: bool = False) -> dict:
         """Start LLM semantics generation on a background thread.
 
         Non-blocking: the LLM call can take 10-60s, so it never runs on the
@@ -371,30 +379,42 @@ class Bridge:
         while a generation is in flight starts a fresh one; the stale worker
         discards its result (``_sem_token``).
 
+        ``force=True`` (the 🔄 更新语义 button) bypasses the graph.db cache:
+        ``semantic.generate(force=True)`` always calls the LLM and re-saves
+        the result, instead of returning the persisted one. The session
+        cache is cleared so the poll keeps waiting for the fresh result.
+
         Returns:
           ``{"status": "ready", "result": {...}}`` - already generated this
               session (front end can apply it immediately);
           ``{"status": "started"}`` - background generation is running;
           ``{"status": "no_key"}``  - no API key; original names are kept.
         """
-        if self._semantics is not None:
+        if not force and self._semantics is not None:
             return {"status": "ready", "result": self._semantics}
         if not semantic.llm_config().get("api_key"):
             return {"status": "no_key"}
         self._sem_token += 1
+        if force:
+            # Drop the session cache so get_semantics() stays None until the
+            # freshly generated result lands (otherwise the poll would stop
+            # on the previous result and the update would appear to do nothing).
+            self._semantics = None
+            self._arch_pattern = None
         threading.Thread(target=self._semantics_worker,
-                         args=(self._sem_token,), daemon=True).start()
-        return {"status": "started"}
+                         args=(self._sem_token, force), daemon=True).start()
+        return {"status": "started", "force": force}
 
-    def _semantics_worker(self, token: int) -> None:
+    def _semantics_worker(self, token: int, force: bool = False) -> None:
         """Run semantic.generate() off the js_api thread and fold the result
         into the live module registry. Results are dropped if a newer
         generation was requested or the repo changed mid-flight (load_repo
-        bumps ``_sem_token`` and swaps ``db_path``).
+        bumps ``_sem_token`` and swaps ``db_path``). ``force`` bypasses the
+        persisted cache (manual 🔄 更新语义).
         """
         db_path, modules = self.db_path, self.modules
         try:
-            result = semantic.generate(db_path, modules)
+            result = semantic.generate(db_path, modules, force=force)
         except Exception:  # defensive: semantics must never break the UI
             logger.exception("semantics generation failed")
             result = None
@@ -407,7 +427,9 @@ class Bridge:
     def _merge_semantics(self, result: dict) -> None:
         """Fold LLM-derived Chinese names into the live module registry so
         get_macro/get_micro/load_repo outputs use them automatically,
-        without any front-end schema change."""
+        without any front-end schema change. Original names are preserved in
+        ``_mod_orig_name`` and surfaced as ``orig_name`` by get_macro/get_micro.
+        """
         mods = result.get("modules") or {}
         for i, (key, name, icon) in enumerate(self.modules):
             info = mods.get(key) or {}
@@ -415,6 +437,9 @@ class Bridge:
                 self.modules[i] = (key, info["name"], icon)
                 self._mod_name[key] = info["name"]
         self._arch_pattern = result.get("arch_pattern")
+        # The detached micro window reads its own bridge instance; keep its
+        # names/originals/semantics in sync so it shows the same labels.
+        self._inherit_state(self._micro_bridge)
 
     def get_semantics(self) -> dict | None:
         """Session-cached LLM semantics (start generation via
@@ -881,6 +906,12 @@ class Bridge:
             cap = 6
             modules.append({
                 "key": key, "name": name, "icon": icon,
+                # Original (pre-LLM) module name + one-line duty from the
+                # semantic layer, so the UI shows the full documented output
+                # instead of silently replacing the original name.
+                "orig_name": self._mod_orig_name.get(key, name),
+                "desc": (self._semantics or {}).get("modules", {})
+                        .get(key, {}).get("desc", ""),
                 "class_count": len(cls_list),
                 "file_count": len(files),
                 "files": [self.rel_path(fp) for fp in ranked[:cap]],
@@ -952,7 +983,12 @@ class Bridge:
         return {
             "module": {"key": module_key,
                        "name": self._mod_name[module_key],
-                       "icon": self._mod_icon[module_key]},
+                       "icon": self._mod_icon[module_key],
+                       "orig_name": self._mod_orig_name.get(
+                           module_key, self._mod_name[module_key]),
+                       "desc": (self._semantics or {})
+                           .get("modules", {}).get(module_key, {})
+                           .get("desc", "")},
             "classes": classes,
             "files": [
                 {"rel": self.rel_path(fp),

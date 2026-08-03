@@ -39,6 +39,14 @@
   function api() { return window.pywebview && window.pywebview.api; }
   function setStatus(msg) { statusEl.textContent = msg; }
 
+  // "新闻资讯（原 新闻模块）" when the LLM renamed the module; the original
+  // name comes from the bridge (orig_name) and is kept visible.
+  function moduleDisplayName(m) {
+    if (!m) { return ''; }
+    var orig = m.orig_name || m.name || '';
+    return (orig && orig !== m.name) ? m.name + '（原 ' + orig + '）' : (m.name || orig);
+  }
+
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: 'loose',
@@ -251,10 +259,13 @@
   function render() {
     if (!state.data) { return; }
     var d = state.data;
-    titleEl.textContent = d.module.name;
+    var dname = moduleDisplayName(d.module);
+    titleEl.textContent = dname;
     viewCountEl.innerHTML = '类 <b>' + d.stats.classes + '</b>' +
       ' · 文件 <b>' + d.stats.files + '</b> · 边 <b>' + d.stats.edges + '</b>';
-    setStatus('微观：' + d.module.name + ' 类图 · 滚轮缩放 · 拖动平移');
+    setStatus('微观：' + dname + ' 类图' +
+      (d.module.desc ? ' · ' + d.module.desc : '') +
+      ' · 滚轮缩放 · 拖动平移');
     var id = 'codemap-micro-' + (++renderSeq);
     mermaid.render(id, buildMicro(d)).then(function (res) {
       var holder = document.createElement('div');

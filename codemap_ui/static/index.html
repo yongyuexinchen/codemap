@@ -51,6 +51,8 @@
   .module-list .item b { color: var(--accent); font-weight: 600; }
   .module-list .item .hint { margin-left: auto; color: var(--muted);
     font-size: 11px; }
+  .module-list .item .sub { color: var(--muted); font-size: 11px;
+    font-weight: 400; }
   .module-list .empty { padding: 8px 10px; color: var(--muted); font-size: 12px; }
   #pop-micro { white-space: nowrap; }
   .stats { margin-left: auto; color: var(--muted); white-space: nowrap; }
@@ -214,7 +216,8 @@
       </div>
       <button id="pop-micro" title="把微观图弹出为独立窗口">⧉ 弹出</button>
       <button id="open-repo" title="加载另一个项目（粘贴路径 / 选最近项目 / 把文件夹拖进窗口）">📂 打开项目</button>
-      <button id="settings" title="LLM 设置（中文模块名语义层）">⚙️</button>
+      <button id="settings" title="LLM 设置（中文业务名 / 一句话职责 / 架构模式语义层）">⚙️</button>
+      <button id="sem-update" title="强制重新调用 LLM 生成中文业务名 / 一句话职责 / 架构模式（绕过已保存的结果，需配置 API Key）">🔄 更新语义</button>
       <button id="refresh">刷新</button>
       <span class="zoom-group">
         <button id="zoom-out" title="缩小 (滚轮向下)">−</button>
@@ -273,8 +276,9 @@
         <span>⚙️ LLM 设置</span>
         <button id="settings-cancel" title="关闭 (Esc)">✕</button>
       </div>
-      <div class="settings-desc">用于给每个业务模块生成<b>中文业务名</b>与<b>一句话职责</b>（DeepSeek API）。
-        不配置时保持原有模块名，其余功能完全不受影响。</div>
+      <div class="settings-desc">用于给每个业务模块生成<b>中文业务名</b>、<b>一句话职责</b>与项目<b>架构模式</b>（DeepSeek API）。
+        结果<b>保留原模块名</b>并展示为“中文名（原 原模块名）”；首次生成结果会<b>保存到图谱数据库</b>，之后打开同一项目不再重复调用。
+        点「🔄 更新语义」可强制重新生成。不配置时保持原有模块名，其余功能完全不受影响。</div>
       <label for="llm-api-key">API Key</label>
       <input id="llm-api-key" type="password" placeholder="sk-…（留空 = 不启用）"
              autocomplete="off" spellcheck="false">

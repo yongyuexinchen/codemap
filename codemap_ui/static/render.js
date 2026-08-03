@@ -35,6 +35,7 @@
   var llmModelEl = document.getElementById('llm-model');
   var llmStatusEl = document.getElementById('llm-status');
   var llmSaveBtn = document.getElementById('llm-save');
+  var semUpdateBtn = document.getElementById('sem-update');
 
   var state = { view: 'macro', module: 'AUTH', macroData: null,
     microData: null, activeVp: null, lastChange: null };
@@ -118,6 +119,10 @@
         key: key,
         icon: m.icon || '📁',
         name: m.name || key,
+        // The name coming back from load_repo is the pre-LLM original;
+        // applySemantics() later renames `name` but keeps `origName` so the
+        // UI can show "中文名（原 原模块名）".
+        origName: m.name || key,
         hay: KNOWN_HAY[key] || (key + ' ' + (m.name || '') + ' ' + key.toLowerCase())
       };
     });
@@ -155,6 +160,7 @@
       moduleSearch.disabled = false;
       popMicroBtn.disabled = false;
       REFRESH_BTN.disabled = false;
+      semUpdateBtn.disabled = false;
       armPolling();
       setStatus('已加载项目：' + r.repo);
       setViewButtons();
@@ -192,6 +198,15 @@
       if (MODULES[i].key === key) { return MODULES[i]; }
     }
     return MODULES[0];
+  }
+
+  // "新闻资讯（原 新闻模块）" when the LLM renamed a module, else the plain
+  // name. `origName` is the JS-side original (set by applyModules/
+  // applySemantics), `orig_name` the Python-side one (get_macro/get_micro).
+  function moduleDisplayName(m) {
+    if (!m) { return ''; }
+    var orig = m.origName || m.orig_name || m.name || '';
+    return (orig && orig !== m.name) ? m.name + '（原 ' + orig + '）' : (m.name || orig);
   }
 
   // True when the input still holds a picker display value we wrote, e.g.
@@ -265,8 +280,11 @@
     picker.filtered.forEach(function (m, i) {
       var item = document.createElement('div');
       item.className = 'item' + (i === picker.active ? ' active' : '');
+      var orig = m.origName || m.orig_name || m.name;
+      var sub = (orig && orig !== m.name)
+        ? '<span class="sub">原 ' + esc(orig) + '</span> ' : '';
       item.innerHTML = '<span>' + m.icon + ' ' + highlight(m.name, query) +
-        '</span><span class="hint">' + m.key + '</span>';
+        ' ' + sub + '</span><span class="hint">' + m.key + '</span>';
       // mousedown (not click) so the input keeps focus and blur never
       // hides the list before the selection lands.
       item.addEventListener('mousedown', function (e) {
@@ -365,7 +383,10 @@
     var L = ['%%{init: {"flowchart": {"curve": "step"}}}%%',
       'flowchart TB', '  %% CodeMap 宏观：业务模块图'];
     data.modules.forEach(function (mod) {
-      L.push('  subgraph G' + mod.key + '["' + mod.icon + ' ' + esc(mod.name) + '"]');
+      var orig = mod.origName || mod.orig_name || mod.name;
+      var title = (orig && orig !== mod.name)
+        ? mod.name + '（原 ' + orig + '）' : mod.name;
+      L.push('  subgraph G' + mod.key + '["' + mod.icon + ' ' + esc(title) + '"]');
       var lines = mod.files.map(function (f) { return esc(f); }).join('<br/>');
       var more = mod.more_files
         ? '<br/><span style="color:#c8cdd6;font-size:11px">+ ' + mod.more_files + ' 更多</span>' : '';
@@ -381,7 +402,14 @@
       }
       var label =
         '<div style="text-align:left;line-height:1.5">' +
-        '<b>' + esc(mod.name) + '</b><br/>' +
+        '<b>' + esc(mod.name) + '</b>' +
+        (orig && orig !== mod.name
+          ? ' <span style="color:#c8cdd6;font-size:11px">原 ' + esc(orig) + '</span>'
+          : '') +
+        '<br/>' +
+        (mod.desc
+          ? '<span style="color:#6b7280;font-size:11px">' + esc(mod.desc) + '</span><br/>'
+          : '') +
         '<span style="color:#c8cdd6;font-size:11px">' + mod.class_count + ' 类 · ' +
           mod.file_count + ' 文件</span><br/>' +
         lines + more + badge +
@@ -712,9 +740,12 @@
         .catch(function (err) { setStatus('渲染失败: ' + err); });
     } else if (state.view === 'micro') {
       var d = state.microData;
-      viewCountEl.innerHTML = d.module.name + ' · 类 <b>' + d.stats.classes + '</b>' +
+      var dname = moduleDisplayName(d.module);
+      viewCountEl.innerHTML = dname + ' · 类 <b>' + d.stats.classes + '</b>' +
         ' · 文件 <b>' + d.stats.files + '</b> · 边 <b>' + d.stats.edges + '</b>';
-      setStatus('微观：' + d.module.name + ' 类图 · 滚轮缩放 · 拖动平移 · 「宏观」按钮返回 · 「⧉ 弹出」拆独立窗口');
+      setStatus('微观：' + dname + ' 类图' +
+        (d.module.desc ? ' · ' + d.module.desc : '') +
+        ' · 滚轮缩放 · 拖动平移 · 「宏观」按钮返回 · 「⧉ 弹出」拆独立窗口');
       state.activeVp = vpMain;
       vpMain.render(buildMicro(d), updateZoomLabel)
         .catch(function (err) { setStatus('渲染失败: ' + err); });
@@ -778,24 +809,37 @@
     var changed = false;
     MODULES.forEach(function (m) {
       var info = sem.modules[m.key];
-      if (info && info.name && info.name !== m.name) {
+      if (!info) { return; }
+      if (info.name && info.name !== m.name) {
+        m.origName = m.origName || m.name;  // keep the original visible
         m.name = info.name;
-        m.desc = info.desc || '';
         changed = true;
       }
+      if (info.desc && info.desc !== m.desc) { m.desc = info.desc; changed = true; }
     });
     if (state.macroData && state.macroData.modules) {
       state.macroData.modules.forEach(function (mm) {
         var info = sem.modules[mm.key];
-        if (info && info.name && info.name !== mm.name) {
+        if (!info) { return; }
+        if (info.name && info.name !== mm.name) {
+          mm.origName = mm.origName || mm.name;
           mm.name = info.name;
           changed = true;
         }
+        if (info.desc && info.desc !== mm.desc) { mm.desc = info.desc; changed = true; }
       });
     }
     if (state.microData && state.microData.module) {
       var mi = sem.modules[state.microData.module.key];
-      if (mi && mi.name) { state.microData.module.name = mi.name; changed = true; }
+      if (mi) {
+        var mmd = state.microData.module;
+        if (mi.name && mi.name !== mmd.name) {
+          mmd.origName = mmd.origName || mmd.name;
+          mmd.name = mi.name;
+          changed = true;
+        }
+        if (mi.desc && mi.desc !== mmd.desc) { mmd.desc = mi.desc; changed = true; }
+      }
     }
     if (changed) {
       setPickerValue(state.module);
@@ -803,17 +847,19 @@
     }
     var arch = sem.arch_pattern;
     setStatus((arch ? '架构模式：' + arch + ' · ' : '') +
-              '✅ LLM 语义已生效：中文模块名已更新');
+              '✅ LLM 语义已生效：中文业务名 / 一句话职责 / 架构模式（原模块名已保留）');
     return true;
   }
 
-  function requestSemantics() {
+  function requestSemantics(force) {
     if (!api()) { return; }
-    api().request_semantics().then(function (r) {
+    api().request_semantics(!!force).then(function (r) {
       if (!r) { return; }
       if (r.status === 'ready') { applySemantics(r.result); }
       else if (r.status === 'started') {
-        setStatus('正在调用 LLM 生成中文模块语义（首次约 10–60 秒）…');
+        setStatus(force
+          ? '正在强制重新生成模块语义（重新调用 LLM，约 10–60 秒）…'
+          : '正在调用 LLM 生成中文模块语义（首次约 10–60 秒）…');
         startSemPoll();
       }
       // 'no_key' -> no API key configured: keep original module names.
@@ -831,7 +877,7 @@
           applySemantics(sem);
         } else if (tries >= 45) {   // ~90s: LLM timeout + margin
           stopSemPoll();
-          setStatus('LLM 未返回结果（请检查 API Key / 网络），已保留原始模块名');
+          setStatus('LLM 未返回结果（请检查 API Key / 网络），已保留现有模块名');
         }
       }).catch(function () {
         stopSemPoll();
@@ -854,6 +900,7 @@
     moduleSearch.disabled = true;
     popMicroBtn.disabled = true;
     REFRESH_BTN.disabled = true;
+    semUpdateBtn.disabled = true;
     viewCountEl.innerHTML = '未打开项目';
     window.__codemap_view = 'macro';
     graphEl.innerHTML =
@@ -940,6 +987,30 @@
   }
 
   REFRESH_BTN.addEventListener('click', function () { doRefresh(false); });
+
+  // ---- manual LLM semantics update (🔄 更新语义) ----------------------
+  // Re-generates the Chinese business names / duties / architecture pattern
+  // on demand, bypassing the graph.db cache (force=True). The cached result
+  // from the first translation is still served on every normal load, so the
+  // button is the only way to force a fresh LLM call.
+  semUpdateBtn.addEventListener('click', function () {
+    if (!api()) { setStatus('pywebview 桥接不可用'); return; }
+    semUpdateBtn.disabled = true;
+    api().request_semantics(true).then(function (r) {
+      semUpdateBtn.disabled = false;
+      if (!r) { return; }
+      if (r.status === 'ready') { applySemantics(r.result); }
+      else if (r.status === 'started') {
+        setStatus('正在强制重新生成模块语义（重新调用 LLM，约 10–60 秒）…');
+        startSemPoll();
+      } else if (r.status === 'no_key') {
+        setStatus('未配置 API Key：请先在 ⚙️ 设置中填写并保存（原模块名保持不变）');
+      }
+    }).catch(function (err) {
+      semUpdateBtn.disabled = false;
+      setStatus('语义更新失败: ' + err);
+    });
+  });
 
   // ---- in-app repo loading: panel, drag-drop, recent list --------------
   document.getElementById('open-repo').addEventListener('click', openRepoPanel);
